@@ -107,6 +107,15 @@ body {
 .confirm-times .row-val.new { color: #16a34a; }
 
 /* State / success pages */
+/* ⛔ THE ICON'S COLOUR IS SET HERE, NOT ON THE <svg stroke=""> ATTRIBUTE, and the
+   attribute keeps a literal as its fallback. A presentation attribute is parsed as
+   CSS but var() support in that position is the shakiest corner of the feature, and
+   the failure mode is not a wrong colour: an invalid stroke computes to `none` and
+   the glyph VANISHES on a customer-facing page. A real rule always beats a
+   presentation attribute, and var() in a real rule is universally supported, so this
+   is themed everywhere and merely un-themed in the worst case. */
+.state-icon svg { stroke: var(--bk-muted); }
+
 .state-page { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 2rem 1rem; min-height: 240px; }
 .state-icon { width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: .875rem; }
 .state-icon.check { background: #dcfce7; }
@@ -192,7 +201,7 @@ body {
   <section class="right-col">
     <div class="state-page">
       <div class="state-icon info" aria-hidden="true">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--bk-muted)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </div>
       <h2>{{call .T "booking_already_cancelled_title"}}</h2>
       <p>{{call .T "booking_already_cancelled_text"}}</p>
