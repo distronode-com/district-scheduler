@@ -122,7 +122,14 @@
   });
   </script>
   {{end}}
-  <a href="https://calnode.com" target="_blank" rel="noopener noreferrer">Calnode</a>
+  {{/* ⛔ FORK-ONLY, and it must NOT go upstream. Upstream links calnode.com here; this
+       fork ships as District AI Scheduling and a customer-facing booking page that
+       credits a product nobody bought is a support question waiting to happen.
+       Apache-2.0 is satisfied by the notices in source and by NOTICE, not by a UI
+       backlink, so removing it is a branding decision rather than a licensing one —
+       upstream attribution stays where the licence actually asks for it. If this
+       template is ever part of an upstream PR, this line reverts first. */}}
+  <a href="https://distronode.com" target="_blank" rel="noopener noreferrer">District AI</a>
 </footer>{{end}}
 
 {{define "demoNoindex"}}{{if .DemoMode}}<meta name="robots" content="noindex,nofollow">{{end}}{{end}}

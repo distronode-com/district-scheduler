@@ -29,13 +29,48 @@
 {{end}}
 <link rel="stylesheet" href="/booking.css?v={{.CSSVersion}}">
 <style>
+/* ── Distronode theme ────────────────────────────────
+   Re-declares the tokens from /booking.css so the HOSTED pages carry the
+   distronode.com palette: cool off-white ground, near-black cool text, and the
+   site's indigo as the single accent (the neutral sheet uses ink for both text
+   and buttons; the site splits them).
+
+   ⛔ SCOPED TO THIS PAGE ON PURPOSE. The embed widget on a customer's own site
+   loads the same /booking.css and must NOT pick this up — their booking widget
+   should sit in their design, not ours. It never sees this block: it lives in
+   the page <style>, not the shared sheet, and custom properties reach a widget
+   only from ITS host page. Anything added here that the widget should also get
+   belongs in booking.css instead.
+
+   Source of truth is distronode-website/src/app/globals.css; values are its HSL
+   tokens converted to hex. Deliberately NOT the email letterhead, which is a
+   different, warmer treatment for transactional mail. */
+:root {
+  --bk-fg: #14141a;
+  --bk-fg-2: #393946;
+  --bk-body: #4b4b58;
+  --bk-muted: #60606c;
+  --bk-subtle: #8b8b9c;
+  --bk-border: #e0e0e6;
+  --bk-border-strong: #c6c6d2;
+  --bk-surface: #f3f3f7;
+  --bk-elevated: #fcfcfd;
+  --bk-card: #ffffff;
+  --bk-primary: #3f36e2;
+  --bk-primary-hover: #2c24cc;
+  --bk-on-primary: #ffffff;
+  --bk-focus-ring: rgba(63,54,226,.18);
+  --bk-danger: #d32222;
+  --bk-page-bg: #f9f9fb;
+}
+
 /* Page chrome (body/footer) + page-level responsive + mobile step-flow. The card /
    calendar / slots / form visual primitives come from the shared /booking.css above
    (the same sheet the embed widget loads), so the two never drift. */
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
-  background: #f3f4f6;
-  color: #111827;
+  background: var(--bk-page-bg);
+  color: var(--bk-fg);
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -63,11 +98,11 @@ body {
 @media (max-width: 700px) {
   body { padding: 0 0 1.5rem; align-items: center; gap: 1rem; }
   .card { flex-direction: column; border-radius: 0; box-shadow: none; min-height: calc(100vh - 3rem); width: 100%; }
-  .info { width: 100%; border-right: none; border-bottom: 1px solid #e5e7eb; padding: 1.25rem 1rem; }
+  .info { width: 100%; border-right: none; border-bottom: 1px solid var(--bk-border); padding: 1.25rem 1rem; }
   .info .host-faces { margin-bottom: .25rem; }
   /* Full-width info panel: lay duration + location on one line (matches the embed widget). */
   .meta { flex-direction: row; flex-wrap: wrap; gap: .35rem .9rem; margin-top: .75rem; }
-  .cal-col { border-right: none; border-bottom: 1px solid #e5e7eb; padding: 1.25rem 1rem; }
+  .cal-col { border-right: none; border-bottom: 1px solid var(--bk-border); padding: 1.25rem 1rem; }
   .cal-grid { grid-template-columns: repeat(7, 1fr); width: 100%; }
   .ch, .cd { width: 100%; }
   .right-col { padding: 1.25rem 1rem; }
@@ -84,7 +119,7 @@ body {
 
 {{if or .LogoURL .BusinessName}}
 <header style="text-align:center;padding:24px 16px 4px;">
-  {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.BusinessName}}" style="height:{{.LogoHeight}}px;width:auto;max-width:100%;opacity:{{.LogoOpacity}};display:inline-block;border:0;">{{else}}<span style="font-size:.9375rem;font-weight:600;color:#111827;">{{.BusinessName}}</span>{{end}}
+  {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.BusinessName}}" style="height:{{.LogoHeight}}px;width:auto;max-width:100%;opacity:{{.LogoOpacity}};display:inline-block;border:0;">{{else}}<span style="font-size:.9375rem;font-weight:600;color:var(--bk-fg);">{{.BusinessName}}</span>{{end}}
 </header>
 {{end}}
 

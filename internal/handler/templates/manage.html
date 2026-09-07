@@ -29,13 +29,48 @@
 {{end}}
 <link rel="stylesheet" href="/booking.css?v={{.CSSVersion}}">
 <style>
+/* ── Distronode theme ────────────────────────────────
+   Re-declares the tokens from /booking.css so the HOSTED pages carry the
+   distronode.com palette: cool off-white ground, near-black cool text, and the
+   site's indigo as the single accent (the neutral sheet uses ink for both text
+   and buttons; the site splits them).
+
+   ⛔ SCOPED TO THIS PAGE ON PURPOSE. The embed widget on a customer's own site
+   loads the same /booking.css and must NOT pick this up — their booking widget
+   should sit in their design, not ours. It never sees this block: it lives in
+   the page <style>, not the shared sheet, and custom properties reach a widget
+   only from ITS host page. Anything added here that the widget should also get
+   belongs in booking.css instead.
+
+   Source of truth is distronode-website/src/app/globals.css; values are its HSL
+   tokens converted to hex. Deliberately NOT the email letterhead, which is a
+   different, warmer treatment for transactional mail. */
+:root {
+  --bk-fg: #14141a;
+  --bk-fg-2: #393946;
+  --bk-body: #4b4b58;
+  --bk-muted: #60606c;
+  --bk-subtle: #8b8b9c;
+  --bk-border: #e0e0e6;
+  --bk-border-strong: #c6c6d2;
+  --bk-surface: #f3f3f7;
+  --bk-elevated: #fcfcfd;
+  --bk-card: #ffffff;
+  --bk-primary: #3f36e2;
+  --bk-primary-hover: #2c24cc;
+  --bk-on-primary: #ffffff;
+  --bk-focus-ring: rgba(63,54,226,.18);
+  --bk-danger: #d32222;
+  --bk-page-bg: #f9f9fb;
+}
+
 /* Page chrome + manage-specific views (booking details, reschedule confirm, state
    pages). Card / calendar / slots / form visual primitives come from the shared
    /booking.css above — the same sheet book.html and the embed widget use. */
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
-  background: #f3f4f6;
-  color: #111827;
+  background: var(--bk-page-bg);
+  color: var(--bk-fg);
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -47,28 +82,28 @@ body {
 /* .powered-by footer styles live in booking.css (shared with the booking page). */
 
 /* Page-specific id hooks + tweaks layered on the shared sheet. */
-#month-label { flex: 1; font-size: .9375rem; font-weight: 600; color: #111827; }
+#month-label { flex: 1; font-size: .9375rem; font-weight: 600; color: var(--bk-fg); }
 #tz-sizer { position: absolute; visibility: hidden; white-space: nowrap; font-size: .6875rem; font-family: inherit; }
 .tz-wrapper select { max-width: 190px; }
 
 /* ── Manage-specific views ──────────────────────── */
-.section-title { font-size: .9375rem; font-weight: 600; color: #111827; margin-bottom: 1rem; }
-.scheduled-label { font-size: .6875rem; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: #9ca3af; margin-bottom: .25rem; }
-.scheduled-time { font-size: .9375rem; font-weight: 600; color: #111827; margin-bottom: 1.5rem; }
+.section-title { font-size: .9375rem; font-weight: 600; color: var(--bk-fg); margin-bottom: 1rem; }
+.scheduled-label { font-size: .6875rem; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: var(--bk-subtle); margin-bottom: .25rem; }
+.scheduled-time { font-size: .9375rem; font-weight: 600; color: var(--bk-fg); margin-bottom: 1.5rem; }
 /* Main view: center + cap the action buttons in the (wide) right column. */
 #main-view .btn-primary, #main-view .btn-secondary { margin-left: auto; margin-right: auto; }
 .btn-primary { display: block; max-width: 340px; margin-top: 0; }
 .btn-secondary {
   display: block; width: 100%; max-width: 340px; padding: .675rem 1rem; margin-top: .5rem;
-  background: #fff; color: #b91c1c; border: 1.5px solid #e5e7eb; border-radius: 8px;
+  background: #fff; color: #b91c1c; border: 1.5px solid var(--bk-border); border-radius: 8px;
   font-size: .9375rem; font-weight: 600; cursor: pointer; transition: border-color .12s, background .12s;
 }
 .btn-secondary:hover { border-color: #fca5a5; background: #fef2f2; }
 
 .confirm-times { display: flex; flex-direction: column; gap: .5rem; margin: 0 0 1.25rem; }
 .confirm-times .row { display: flex; gap: .75rem; align-items: baseline; }
-.confirm-times .row-label { font-size: .6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: #9ca3af; width: 2.75rem; flex-shrink: 0; }
-.confirm-times .row-val { font-size: .875rem; font-weight: 600; color: #111827; }
+.confirm-times .row-label { font-size: .6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--bk-subtle); width: 2.75rem; flex-shrink: 0; }
+.confirm-times .row-val { font-size: .875rem; font-weight: 600; color: var(--bk-fg); }
 .confirm-times .row-val.new { color: #16a34a; }
 
 /* State / success pages */
@@ -76,9 +111,9 @@ body {
 .state-icon { width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: .875rem; }
 .state-icon.check { background: #dcfce7; }
 .state-icon.warn  { background: #fef3c7; }
-.state-icon.info  { background: #f3f4f6; }
+.state-icon.info  { background: var(--bk-surface); }
 .state-page h2 { font-size: 1rem; font-weight: 700; margin-bottom: .375rem; }
-.state-page p  { font-size: .8125rem; color: #6b7280; line-height: 1.6; max-width: 320px; }
+.state-page p  { font-size: .8125rem; color: var(--bk-muted); line-height: 1.6; max-width: 320px; }
 
 /* Mobile back-to-calendar button inside the reschedule picker; hidden on desktop. */
 .cal-back { display: none; }
@@ -87,11 +122,11 @@ body {
 @media (max-width: 700px) {
   body { padding: 0 0 1.5rem; gap: 1rem; }
   .card { flex-direction: column; border-radius: 0; box-shadow: none; min-height: calc(100vh - 3rem); width: 100%; }
-  .info { width: 100%; border-right: none; border-bottom: 1px solid #e5e7eb; padding: 1.25rem 1rem; }
+  .info { width: 100%; border-right: none; border-bottom: 1px solid var(--bk-border); padding: 1.25rem 1rem; }
   .info .host-faces { margin-bottom: .25rem; }
   /* Full-width info panel: lay duration + location on one line (matches the embed widget). */
   .meta { flex-direction: row; flex-wrap: wrap; gap: .35rem .9rem; margin-top: .75rem; }
-  .cal-col { border-right: none; border-bottom: 1px solid #e5e7eb; padding: 1.25rem 1rem; }
+  .cal-col { border-right: none; border-bottom: 1px solid var(--bk-border); padding: 1.25rem 1rem; }
   .cal-grid { grid-template-columns: repeat(7, 1fr); width: 100%; }
   .ch, .cd { width: 100%; }
   .right-col { padding: 1.25rem 1rem; }
@@ -108,7 +143,7 @@ body {
 
 {{if or .LogoURL .BusinessName}}
 <header style="text-align:center;padding:24px 16px 4px;">
-  {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.BusinessName}}" style="height:{{.LogoHeight}}px;width:auto;max-width:100%;opacity:{{.LogoOpacity}};display:inline-block;border:0;">{{else}}<span style="font-size:.9375rem;font-weight:600;color:#111827;">{{.BusinessName}}</span>{{end}}
+  {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.BusinessName}}" style="height:{{.LogoHeight}}px;width:auto;max-width:100%;opacity:{{.LogoOpacity}};display:inline-block;border:0;">{{else}}<span style="font-size:.9375rem;font-weight:600;color:var(--bk-fg);">{{.BusinessName}}</span>{{end}}
 </header>
 {{end}}
 
@@ -157,7 +192,7 @@ body {
   <section class="right-col">
     <div class="state-page">
       <div class="state-icon info" aria-hidden="true">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--bk-muted)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </div>
       <h2>{{call .T "booking_already_cancelled_title"}}</h2>
       <p>{{call .T "booking_already_cancelled_text"}}</p>
