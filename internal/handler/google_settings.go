@@ -75,6 +75,21 @@ func (h *Handler) GetGoogleSettings(w http.ResponseWriter, r *http.Request) {
 // Saves credentials to the DB and hot-reloads the gcal and Google auth clients
 // so changes take effect immediately without a server restart.
 // If client_secret is omitted or empty the existing stored secret is kept.
+//
+// ⛔ THE HOT RELOAD IS PROCESS-GLOBAL AND IS SKIPPED ENTIRELY IN MULTI-TENANT MODE
+// (H1). `h.SetCalendar`, `h.SetGoogleAuth` and the `calendar.Service` built beside them
+// live on *shared, which every per-request copy of the Handler points at — so ONE
+// workspace's PATCH replaced the Google OAuth client that every OTHER workspace's
+// calendar connect and OAuth login used, until the next restart. The row is still
+// written (it is that workspace's own `server_settings`), and it takes effect for that
+// workspace the way every other per-tenant setting does; what does not happen is the
+// instance-wide swap.
+//
+// This is belt and braces: the route is wrapped in h.PlatformManaged at registration,
+// so a tenant credential never reaches this handler in that mode at all. It is here
+// because the wrapper is one line in another package and the blast radius of losing it
+// is every tenancy on the process — the guard nearest the damage is the one that has to
+// hold if the outer one is ever refactored away.
 func (h *Handler) PatchGoogleSettings(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireAdmin(w, r); !ok {
 		return
@@ -105,10 +120,12 @@ func (h *Handler) PatchGoogleSettings(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		h.SetCalendar(nil)
-		h.authMu.Lock()
-		h.googleAuth = nil
-		h.authMu.Unlock()
+		if !h.multiTenant {
+			h.SetCalendar(nil)
+			h.authMu.Lock()
+			h.googleAuth = nil
+			h.authMu.Unlock()
+		}
 		h.GetGoogleSettings(w, r)
 		return
 	}
@@ -164,7 +181,7 @@ func (h *Handler) PatchGoogleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if resolvedSecret != "" {
+	if resolvedSecret != "" && !h.multiTenant {
 		encKeyHex := hex.EncodeToString(h.encKey[:])
 		gc, err := gcal.New(h.db, req.ClientID, resolvedSecret, h.baseURL+"/v1/calendar/callback", encKeyHex)
 		if err != nil {
