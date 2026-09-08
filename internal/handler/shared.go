@@ -2,6 +2,7 @@ package handler
 
 import (
 	"log/slog"
+	"net"
 	"sync"
 	"time"
 
@@ -111,6 +112,12 @@ type shared struct {
 	ssoSecret     string // HMAC key for the signed session hand-off; empty ⇒ /v1/auth/sso is off
 	metricsToken  string // bearer token for GET /metrics; empty ⇒ that endpoint 404s
 	sttBaseURLCfg string // STT_BASE_URL override; empty ⇒ stt.DefaultBaseURL (see sttBaseURL)
+
+	// metricsAnonymousNets is METRICS_ALLOW_UNAUTHENTICATED_FROM, already parsed. A
+	// request whose TCP peer falls inside one of these may scrape /metrics with no
+	// bearer. Empty ⇒ nothing changes and the token is the only way in. Parsed once at
+	// boot and never written again, like the three strings above it.
+	metricsAnonymousNets []*net.IPNet
 
 	authMu        sync.RWMutex
 	googleAuth    *oauth2.Config

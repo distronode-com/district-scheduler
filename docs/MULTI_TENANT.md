@@ -49,6 +49,42 @@ magic link), and every route says which of the two it uses.
 | `DATA_DIR` | where uploads (avatars, branding) are written; defaults to the relative `data`. A read-only image sets it to its mounted volume |
 | `PLATFORM_RETURN_ORIGINS` | comma-separated origins the calendar OAuth round trip may return the browser to. Unset ⇒ off, and a `return_to` is **refused**, not ignored |
 | `ADMIN_SPA` | `on` (default) or `off`. `off` stops serving the embedded admin console, so the platform's own dashboard is the only admin UI. Multi-tenant only |
+| `METRICS_ALLOW_UNAUTHENTICATED_FROM` | comma-separated CIDRs whose requests may scrape `GET /metrics` with no bearer. Empty ⇒ off, and the bearer is the only way in |
+
+### `METRICS_ALLOW_UNAUTHENTICATED_FROM`
+
+`GET /metrics` is bearer-gated on `METRICS_TOKEN` and answers **404** without it, which is
+right for a publicly reachable endpoint and wrong for the one caller that has to read it.
+A Prometheus collector cannot hold this kind of secret: Grafana Alloy's annotation
+autodiscovery sends **one** bearer token file to every target it scrapes, so pointing it
+at `METRICS_TOKEN` would present this instance's token to every other annotation-scraped
+pod on the cluster. Measured consequence before this existed: the scrape 404'd about
+**5,755 times a day** fleet-wide and the fork published no metrics in any region.
+
+Set it to the networks the collector dials from and those requests are served without a
+bearer. On a Kubernetes origin that is the **cluster's pod CIDR** — the value the
+`district-scheduler` manifest passes is the pod network of the cluster the pod runs in
+(k3s default `10.42.0.0/16`; the manifest is the manager's to set). Everything else about
+the route is unchanged: the bearer still works, and outside these networks the answer is
+the 404 it always was.
+
+⛔ **Matched against the TCP peer, never a forwarded header** — not `X-Forwarded-For`, not
+`CF-Connecting-IP`, and not the trusted-proxy-resolved client IP that
+`TRUSTED_PROXY_CIDRS` produces for the rate limiter. Here the address *is* the credential,
+so it has to be the one value in a request a client cannot choose; reading a header would
+let anyone who can reach the endpoint claim to be the collector by asserting it. The rate
+limiter can afford the opposite trade because the worst outcome of a forged value there is
+a shared bucket.
+
+⚠️ **So the endpoint must not be reachable THROUGH a proxy inside the allowed range**, or
+every request arrives wearing that proxy's address. On this fleet the scrape is a pod
+dialling the pod IP on `:3000` directly, and public traffic reaches the booking hosts
+through Caddy on the node, which is a different path.
+
+An unparseable entry is logged and dropped rather than fatal, following
+`TRUSTED_PROXY_CIDRS`: the consequence is that that network cannot scrape anonymously,
+which is the safe direction. The boot log names the list when it is in use, so "why is
+`/metrics` answering without a token" is readable without reading the environment.
 
 ### `ADMIN_SPA`
 

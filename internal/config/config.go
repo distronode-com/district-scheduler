@@ -105,6 +105,27 @@ type Config struct {
 	// queue depth by accident. Env-only, for the same reason as SSOSharedSecret.
 	MetricsToken string
 
+	// MetricsAllowUnauthenticatedFrom lists the networks whose requests may scrape
+	// GET /metrics with no bearer at all. Empty (the default) ⇒ the bearer is the only
+	// way in, which is what every existing deployment has.
+	//
+	// It exists because a Prometheus scraper is not a caller that can hold a secret in
+	// the shape this endpoint wants one. Grafana Alloy's annotation autodiscovery sends
+	// ONE bearer token file for every target it scrapes, so pointing it at METRICS_TOKEN
+	// would present this instance's token to every other annotation-scraped pod on the
+	// cluster. The alternative offered here is the network position: on a Kubernetes
+	// origin the collector is a pod on the cluster's own pod CIDR, which nothing outside
+	// the node can source-address.
+	//
+	// ⛔ It is matched against the TCP PEER, never a forwarded header — see
+	// handler.SetMetricsAnonymousNetworks. A CIDR list checked against a value the client
+	// chooses is not a control at all, and this one is the whole control.
+	//
+	// Comma-separated CIDRs; a bare address is taken as a single host, exactly as
+	// TRUSTED_PROXY_CIDRS reads. An unparseable entry is logged and dropped rather than
+	// fatal, and dropping one narrows access — the safe direction.
+	MetricsAllowUnauthenticatedFrom []string
+
 	// STTBaseURL overrides the speech-to-text endpoint host for the notetaker, e.g. a
 	// regional endpoint so recordings are transcribed inside one jurisdiction. Empty ⇒
 	// stt.DefaultBaseURL. Only the host is configurable; the path, model and options are
@@ -235,6 +256,7 @@ func Load() *Config {
 	cfg.RecoverySecret = os.Getenv("CALNODE_RECOVERY_SECRET")
 	cfg.SSOSharedSecret = os.Getenv("CALNODE_SSO_SHARED_SECRET")
 	cfg.MetricsToken = os.Getenv("METRICS_TOKEN")
+	cfg.MetricsAllowUnauthenticatedFrom = splitCSV(getEnv("METRICS_ALLOW_UNAUTHENTICATED_FROM", ""))
 	// PUBLIC_BASE_URL overrides the booker-facing host (custom/vanity domain).
 	// Unset → inherits BASE_URL, so single-domain deploys need only set BASE_URL.
 	cfg.PublicBaseURL = getEnv("PUBLIC_BASE_URL", cfg.BaseURL)

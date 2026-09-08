@@ -68,6 +68,20 @@ func BuildHandler(ctx context.Context, cfg *config.Config, db *db.DB, logger *sl
 	h.SetPlatformToken(cfg.PlatformToken)
 	h.SetPlatformReturnOrigins(cfg.PlatformReturnOrigins)
 	h.SetMetricsToken(cfg.MetricsToken)
+	// METRICS_ALLOW_UNAUTHENTICATED_FROM, parsed here because internal/server owns the
+	// parser and the handler package does not import it. A bad entry is logged and
+	// dropped rather than fatal, following TRUSTED_PROXY_CIDRS below: the consequence is
+	// that that network cannot scrape anonymously, which is the safe direction to be
+	// wrong in. Logged at Info when it is in use, because "why is /metrics answering
+	// without a token" should be readable from the boot log.
+	if nets, err := ParseTrustedProxies(cfg.MetricsAllowUnauthenticatedFrom); err != nil {
+		logger.Error("METRICS_ALLOW_UNAUTHENTICATED_FROM: ignoring unparseable entries", "error", err)
+		h.SetMetricsAnonymousNetworks(nets)
+	} else if len(nets) > 0 {
+		logger.Info("serving GET /metrics without a bearer to these networks",
+			"cidrs", cfg.MetricsAllowUnauthenticatedFrom)
+		h.SetMetricsAnonymousNetworks(nets)
+	}
 	h.SetSTTBaseURL(cfg.STTBaseURL)
 	h.SetDemoMode(cfg.DemoMode)
 	h.SetDemoResetInterval(cfg.DemoResetInterval)
