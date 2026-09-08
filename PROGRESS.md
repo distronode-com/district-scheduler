@@ -2208,6 +2208,124 @@ negative control (wrong password): internal/db FAILS with SQLSTATE 28P01 rather 
 | **D13** demo mode and multi-tenant mutually exclusive | **done** in B1 (`config.Validate`) |
 | **D14** rate limits keyed `(workspace, client IP)` via `TRUSTED_PROXY_CIDRS` | **done** with the platform-hooks merge |
 
+## Packet F1 — the platform member API, and managed rows
+
+The dashboard replacing the `/admin/` SPA needs each of its people to act here as their own
+user with their own key, and it needs roles to be the identity provider's answer rather than
+this instance's. Two rows that provisioning already creates were also a live hazard: the
+`platform-provisioned` API key an integration spends and the webhook the platform receives
+bookings on both sat on the owner user, listed with a delete button on the workspace's own
+settings pages. One click, no warning, integration broken, and nothing on either side to say
+so.
+
+### Migration 00063, and what `managed` does and does not mean
+
+`api_keys.managed` and `webhooks.managed`, `SMALLINT` on Postgres and `INTEGER` on SQLite
+(the schema's spelling for every flag it has; `BOOLEAN` would be the only one and the int
+scan targets would reject it). Default 0, so every existing row is unmanaged.
+
+The backfill is `UPDATE api_keys SET managed = 1 WHERE name = 'platform-provisioned'`. That
+name is written by exactly one statement in the tree, so it is a precise marker rather than
+a guess, and a single-tenant database has no such row.
+
+⚠️ **There is deliberately NO webhook backfill.** A webhook row carries nothing that
+distinguishes the platform's from one the workspace created — url, events and fields are all
+values the caller chose, and a tenant could legitimately have made the same subscription.
+Guessing by url shape would mark rows the platform does not own. `PATCH
+/v1/platform/workspaces/{id}/webhooks` is how the platform marks its own, by exact url, once
+it knows which it is: the platform knows the url it gave, the database does not.
+
+| surface | a managed row |
+|---|---|
+| `GET /v1/api-keys`, `GET /v1/webhooks` | omitted |
+| `DELETE /v1/api-keys/{id}`, `PATCH`/`DELETE /v1/webhooks/{id}` | 403 `{"error":"managed by your platform"}` |
+| `RequireAuth` | accepted, unchanged |
+| `webhook.Service.Enqueue` (delivery) | delivered, unchanged |
+
+403 rather than 404 because the row exists and the caller owns the user it hangs off: "not
+found" is a lie they can disprove, and the actionable answer is who to ask. Both refusals
+read the row before writing, since `WHERE ... AND managed = 0` alone affects zero rows for a
+missing row and a managed one alike and cannot tell the two apart.
+
+⛔ **`managed` governs administration, never delivery, and the two are one grep apart.** A
+`managed = 0` predicate added to `Enqueue` for symmetry would stop the provisioning webhook
+delivering the moment 00063 marked it — silently, with the row still present and still
+`is_active = 1`. `TestManagedWebhookStillDelivers` pins it and the comment at the read says
+why. `RequireAuth` is the same shape: hiding a row from a settings page and refusing to
+authenticate it are different things, and only the first is intended.
+
+### The five routes, classified
+
+```
+184 routes: 31 host-scoped, 107 credential-scoped, 38 platform, 8 allowlisted
+```
+
+All five are `h.Platform(...)`, on one line each, and in `routes_classified_test.go`'s
+pinned set. The tenant is named in the URL rather than resolved from a Host or a credential,
+authorised by `CALNODE_PLATFORM_TOKEN`, so the class is the same one the four provisioning
+routes have.
+
+| route | contract |
+|---|---|
+| `POST …/{id}/users` | `{"email","name","role","timezone"?}` → 200 `{"id","email","name","role","created"}` |
+| `POST …/{id}/users/{uid}/api-keys` | `{"name"}` → 201 `{"id","name","api_key"}`, once |
+| `DELETE …/{id}/users/{uid}/api-keys/{keyId}` | 204 |
+| `POST …/{id}/users/{uid}/archive` | 200 `{"archived":true}` |
+| `PATCH …/{id}/webhooks` | `{"url","managed":true}` → 200 `{"updated":n}` |
+
+### The three refusals, each of which is a decision
+
+⛔ **Demoting the sole owner is 409 `owner_demotion_requires_transfer`**, and nothing
+changes. Obeying it leaves a workspace with no owner, which nothing here can repair: every
+route that grants ownership requires an owner to call it. `role: "owner"` is therefore a
+TRANSFER — the same transaction sets `is_owner = 0` on everyone else, so the invariant
+`TransferOwnership` maintains holds after every call to the new route as well.
+
+⛔ **A re-mint of the same name ROTATES rather than adding.** The earlier managed key of that
+name is deleted in the same transaction, so a caller that lost a key never accumulates
+credentials and the old one stops working exactly when the new one starts. The trade is
+accepted: two live keys need two names. Only managed keys rotate — a key the person minted
+for themselves is theirs.
+
+⛔ **`{"managed": false}` is 400.** One-way on purpose: the flag's value is that a credential
+caller cannot reach the row, and an un-manage route is a way to reach it. Delete and
+re-create is the reversal, and it is one an operator has to mean.
+
+### What the archive route inherited, and what it added
+
+The fork REFUSES to archive somebody who still hosts an upcoming booking (`ArchiveUser`
+answers 409), so this route does too — `{"error":"upcoming_bookings","count":n}`, machine
+readable because the platform has to act on the count. The owner is
+`{"error":"owner_cannot_be_archived"}`. Event types are deactivated. Dropped are the guards
+that are about an ADMIN actor rather than about the workspace ("not yourself", "only the
+owner may archive an admin"): the platform is not a member.
+
+Added, and the reason it is a transaction: the person's **managed** keys, sessions and MCP
+tokens go with the same commit. Archiving already blocks a key through `RequireAuth`'s
+`archived_at IS NULL`, but leaving the rows means an un-archive through the upsert route
+silently brings a live credential back on whatever host still holds it. `archived_by` is
+left NULL because the archiver has no `users` row, and an id naming nobody would make
+`RestoreUser`'s "members you archived yourself" check compare against a phantom.
+
+### Two things worth not relearning
+
+⛔ **`ssoResolveUser` is NOT reused, deliberately.** It never rewrites an existing user's
+role and it refuses an archived user, and both are the opposite of what an upsert from the
+identity provider is for: a role change made there has to land here, and a person who comes
+back has to be able to come back.
+
+⚠️ **One upsert statement cannot be written for both engines.** `users` is unique on
+`(workspace_id, email)` on Postgres (00060) and still globally unique on `email` on SQLite,
+so `ON CONFLICT (workspace_id, email)` names a constraint one engine does not have and is a
+hard error there. Read-then-write is the same statement on both, and it is what the
+`created` flag and the zero-owner guard read anyway.
+
+⚠️ **`mintAPIKey` is not yet the only mint.** It replaced the two in `apikey.go` and
+`platform.go`, but `Setup` (`/v1/setup`) still writes its bootstrap key inline — it runs
+before any workspace exists, names no `workspace_id`, and cannot mint a managed key, so
+folding it in is a separate change. `grep -rn '"cno_"' internal/` is the enumeration and
+returns two sites.
+
 ## What a bring-up needs from this side
 
 Environment, on every instance:

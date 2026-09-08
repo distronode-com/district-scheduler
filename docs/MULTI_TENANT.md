@@ -163,6 +163,119 @@ attempt leaves nothing behind.
 | `POST …/{id}/import` | 409 unless the workspace is empty |
 | `DELETE …/{id}/attendees?email=` | erasure, counts per table |
 
+### The member API
+
+The identity provider — not this instance's credential routes — owns who is in a workspace
+and what they may do there. Each of its people acts here as their own user, holding a
+platform-minted key, so a booking, a log line and an API call all name a person rather than
+a shared service account.
+
+#### `POST …/{id}/users` → 200
+
+```json
+{ "email": "ada@acme.example", "name": "Ada Lovelace", "role": "admin", "timezone": "America/Toronto" }
+```
+
+Response: `{"id": "...", "email": "ada@acme.example", "name": "Ada Lovelace", "role": "admin", "created": true}`.
+
+An upsert on `(workspace_id, email)`. The address is lower-cased and trimmed; an empty or
+malformed address, an empty name, a role outside `owner|admin|member`, or a `timezone` that
+is not an IANA name is **400**. `timezone` is optional.
+
+On an existing user: `name` is overwritten, the role is applied, and `archived_at` is
+cleared — an upsert is the statement "this person is in this workspace", so a returning
+member comes back. `iana_timezone` is written **only when `timezone` was sent**, because a
+zone is something a person sets in their own profile and a sync that omits it must not
+reset it. `email_login` is never touched: whether somebody may sign in with a password is a
+fact about this instance's login, not about the directory.
+
+⛔ **`role: "owner"` is a TRANSFER.** The same transaction sets `is_owner = 0` on every
+other user of the workspace, so exactly one owner exists before and after — the invariant
+`POST …/users/{id}/transfer-ownership` maintains holds here too.
+
+⛔ **Demoting the only owner is refused: 409 `{"error":"owner_demotion_requires_transfer"}`,
+and nothing changes.** Obeying it would leave a workspace with no owner, which nothing on
+the instance can repair, because every route that grants ownership requires an owner to
+call it. Upsert the new owner with `role: "owner"` first — that demotes the incumbent — and
+re-send the demotion if it is still wanted.
+
+#### `POST …/{id}/users/{uid}/api-keys` → 201
+
+Body `{"name": "district"}` (1–64 characters). Response
+`{"id": "...", "name": "district", "api_key": "cno_…"}` — the plaintext is **shown once**.
+The key is **managed** (below). **404** when the user is not that workspace's, or is
+archived.
+
+⛔ **A mint with a name the user already has ROTATES.** The earlier *managed* key of that
+name is deleted in the same transaction, so a caller that lost a key and re-mints never
+accumulates credentials, and the old key stops working at the instant the new one starts.
+Two live keys therefore need two names. A key the person minted for themselves under the
+same name is theirs and is left alone.
+
+#### `DELETE …/{id}/users/{uid}/api-keys/{keyId}` → 204
+
+Managed or not. **404** when the key is not that user's in that workspace, so the route
+cannot be used to learn which key ids exist elsewhere.
+
+#### `POST …/{id}/users/{uid}/archive` → 200 `{"archived": true}`
+
+The offboarding path, with the platform as actor: it is not a member, so the "not yourself"
+and "only the owner may archive an admin" guards do not apply to it. What does apply is
+carried over exactly — **409 `{"error":"upcoming_bookings","count": n}`** while the person
+still hosts a booking that has not happened (reassign or cancel first), **409
+`{"error":"owner_cannot_be_archived"}`** for the owner, and their event types are
+deactivated so the public pages stop taking bookings.
+
+The same transaction deletes their **managed** API keys, their sessions and their MCP
+access tokens. Archiving already blocks a key (`RequireAuth` requires `archived_at IS
+NULL`), but leaving the rows would mean an un-archive through the upsert route silently
+brings a live credential back on whatever host still holds it. Their own unmanaged keys are
+left alone: those are the person's, not the platform's.
+
+#### `PATCH …/{id}/webhooks` → 200 `{"updated": n}`
+
+Body `{"url": "https://hooks.acme.example/in", "managed": true}`. Sets `managed = 1` on
+every webhook in that workspace whose `url` matches exactly. Idempotent.
+
+This is how a workspace provisioned before the `managed` column existed gets its
+provisioning webhook marked. The migration could not do it: unlike the API key, whose name
+(`platform-provisioned`) is written by exactly one statement in the codebase, a webhook row
+carries nothing that distinguishes the platform's from one the workspace created — url,
+events and fields are all values the caller chose. The platform knows which url it gave;
+the database does not.
+
+⛔ **`{"managed": false}` is 400.** Managed is one-way on purpose: the flag's value is that
+a credential caller cannot reach the row, and an un-manage route is a way to reach it.
+Deleting the row and re-creating it is the reversal.
+
+### Managed rows
+
+`api_keys.managed` and `webhooks.managed` mark a row the **platform** owns rather than the
+workspace. Two rows created by `POST /v1/platform/workspaces` are managed from the moment
+they are written: the `platform-provisioned` API key an integration spends, and the webhook
+the platform receives bookings on. Both used to sit on the owner user, listed with a delete
+button on the workspace's own settings pages, where one click broke the integration with
+nothing on either side to say so.
+
+| surface | managed row |
+|---|---|
+| `GET /v1/api-keys`, `GET /v1/webhooks` | omitted |
+| `DELETE /v1/api-keys/{id}`, `PATCH`/`DELETE /v1/webhooks/{id}` | **403** `{"error":"managed by your platform"}` |
+| authentication (`RequireAuth`) | accepted, unchanged |
+| webhook **delivery** | delivered, unchanged |
+
+403 rather than 404: the row exists and the caller owns the user it hangs off, so "not
+found" is a lie they can disprove, and the actionable answer is that the platform minted it.
+
+⛔ **`managed` governs administration, never delivery.** The dispatcher's read
+(`WHERE user_id = ? AND is_active = 1`) deliberately does not filter on it. A `managed = 0`
+predicate added there for symmetry would stop the provisioning webhook delivering the
+moment the row was marked — silently, with the row still present and still active.
+
+Managed rows exist only in multi-tenant mode: nothing a credential caller can reach sets
+the flag, and the only writers are the platform routes, which 404 on a single-tenant
+instance.
+
 ## The SSO hand-off
 
 The identity host cannot set a cookie for a tenant's domain, so after a Google or Microsoft login

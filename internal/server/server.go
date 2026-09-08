@@ -355,6 +355,16 @@ func New(ctx context.Context, cfg *config.Config, db *db.DB, logger *slog.Logger
 	mux.HandleFunc("POST /v1/platform/workspaces/{id}/export", h.Platform((*H).ExportWorkspace))
 	mux.HandleFunc("POST /v1/platform/workspaces/{id}/import", h.Platform((*H).ImportWorkspace))
 	mux.HandleFunc("DELETE /v1/platform/workspaces/{id}/attendees", h.Platform((*H).EraseAttendee))
+	// The member API (F1). The identity provider owns who is in a workspace and what they
+	// may do there; each of its people acts here as their own user with a platform-minted
+	// managed key. Platform-wrapped for the same reason the four above are: the tenant is
+	// named in the URL rather than resolved from a Host or a credential, and every
+	// statement in platform_members.go names it.
+	mux.HandleFunc("POST /v1/platform/workspaces/{id}/users", h.Platform((*H).UpsertWorkspaceUser))
+	mux.HandleFunc("POST /v1/platform/workspaces/{id}/users/{uid}/api-keys", h.Platform((*H).MintWorkspaceUserAPIKey))
+	mux.HandleFunc("DELETE /v1/platform/workspaces/{id}/users/{uid}/api-keys/{keyId}", h.Platform((*H).DeleteWorkspaceUserAPIKey))
+	mux.HandleFunc("POST /v1/platform/workspaces/{id}/users/{uid}/archive", h.Platform((*H).ArchiveWorkspaceUser))
+	mux.HandleFunc("PATCH /v1/platform/workspaces/{id}/webhooks", h.Platform((*H).MarkWorkspaceWebhooksManaged))
 
 	// Bootstrap — public, once-only
 	mux.HandleFunc("POST /v1/setup", h.Platform((*H).Setup))

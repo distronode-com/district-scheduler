@@ -241,6 +241,14 @@ func TestPlatformRoutesAreTheIdentityHostSet(t *testing.T) {
 		"POST /v1/platform/workspaces/{id}/export",
 		"POST /v1/platform/workspaces/{id}/import",
 		"DELETE /v1/platform/workspaces/{id}/attendees",
+		// The member API (F1): the identity provider owns roles and mints each of its
+		// people a managed key. Platform for the same reason — the tenant is in the URL,
+		// authorised by CALNODE_PLATFORM_TOKEN rather than by any tenant's credential.
+		"POST /v1/platform/workspaces/{id}/users",
+		"POST /v1/platform/workspaces/{id}/users/{uid}/api-keys",
+		"DELETE /v1/platform/workspaces/{id}/users/{uid}/api-keys/{keyId}",
+		"POST /v1/platform/workspaces/{id}/users/{uid}/archive",
+		"PATCH /v1/platform/workspaces/{id}/webhooks",
 		// Bootstrap: creates the first user of a single-tenant instance.
 		"POST /v1/setup",
 		// OAuth login and its callbacks live on the identity host, because that is
