@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -367,4 +368,257 @@ func TestParseCalendarState_legacyShapesStillParse(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// CalendarCallback — with a return_to in the state
+// ---------------------------------------------------------------------------
+
+// mintState produces the real encrypted state for a round trip, the way ConnectCalendar
+// would have. Going through EncryptState rather than hand-building one is what makes these
+// callback tests exercise the parse the deployed code runs.
+func mintState(t *testing.T, stub *stubCalProvider, userID, returnTo string) string {
+	t.Helper()
+	state, err := stub.EncryptState(encodeCalendarState(stub.name, userID, returnTo))
+	if err != nil {
+		t.Fatalf("EncryptState: %v", err)
+	}
+	return state
+}
+
+func callback(h *Handler, query string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	h.CalendarCallback(rec, httptest.NewRequest(http.MethodGet, "/v1/calendar/callback"+query, nil))
+	return rec
+}
+
+func wantRedirect(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d; want 302 — %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != want {
+		t.Errorf("Location = %q; want %q", got, want)
+	}
+}
+
+// Every way the round trip can fail, and the code each one carries. The platform console
+// reads these; they are the reason it can say something better than "it didn't work".
+func TestCalendarCallback_returnTo_everyFailureCarriesItsReason(t *testing.T) {
+	const returnTo = testConsoleOrigin + "/settings/calendar"
+
+	t.Run("provider_denied", func(t *testing.T) {
+		h, stub := newReturnToHandler(t, testConsoleOrigin)
+		rec := callback(h, "?error=access_denied&state="+url.QueryEscape(mintState(t, stub, "user-1", returnTo)))
+		wantRedirect(t, rec, returnTo+"?calendar=error&reason=provider_denied")
+	})
+
+	t.Run("missing_code", func(t *testing.T) {
+		h, stub := newReturnToHandler(t, testConsoleOrigin)
+		rec := callback(h, "?state="+url.QueryEscape(mintState(t, stub, "user-1", returnTo)))
+		wantRedirect(t, rec, returnTo+"?calendar=error&reason=missing_code")
+	})
+
+	t.Run("exchange_failed", func(t *testing.T) {
+		h, stub := newReturnToHandler(t, testConsoleOrigin)
+		stub.exchangeErr = errors.New("the provider refused the code")
+		rec := callback(h, "?code=abc&state="+url.QueryEscape(mintState(t, stub, "user-1", returnTo)))
+		wantRedirect(t, rec, returnTo+"?calendar=error&reason=exchange_failed")
+		if len(stub.log.calls()) != 1 {
+			t.Errorf("Exchange ran %d times; want 1 — the reason must come from a real attempt", len(stub.log.calls()))
+		}
+	})
+
+	// A state that decrypts but names nobody. The return_to in it is still trustworthy —
+	// it came out of the ciphertext — so the person goes home with a reason rather than
+	// looking at a JSON body on an OAuth callback URL.
+	t.Run("invalid_state", func(t *testing.T) {
+		h, stub := newReturnToHandler(t, testConsoleOrigin)
+		rec := callback(h, "?code=abc&state="+url.QueryEscape(mintState(t, stub, "", returnTo)))
+		wantRedirect(t, rec, returnTo+"?calendar=error&reason=invalid_state")
+	})
+}
+
+func TestCalendarCallback_returnTo_successCarriesConnected(t *testing.T) {
+	h, stub := newReturnToHandler(t, testConsoleOrigin)
+	const returnTo = testConsoleOrigin + "/settings/calendar"
+
+	rec := callback(h, "?code=abc&state="+url.QueryEscape(mintState(t, stub, "user-1", returnTo)))
+
+	wantRedirect(t, rec, returnTo+"?calendar=connected")
+	calls := stub.log.calls()
+	if len(calls) != 1 || calls[0].userID != "user-1" || calls[0].code != "abc" {
+		t.Errorf("Exchange calls = %+v; want one for user-1 with code abc", calls)
+	}
+}
+
+// The console's own query survives, verbatim and in order, and the fragment stays last. A
+// "?" / "&" concatenation would append after the fragment and lose both.
+func TestCalendarCallback_returnTo_appendsToAnExistingQuery(t *testing.T) {
+	for _, tc := range []struct{ name, returnTo, want string }{
+		{
+			name:     "no query",
+			returnTo: testConsoleOrigin + "/settings",
+			want:     testConsoleOrigin + "/settings?calendar=connected",
+		},
+		{
+			name:     "an existing query",
+			returnTo: testConsoleOrigin + "/settings?x=1",
+			want:     testConsoleOrigin + "/settings?x=1&calendar=connected",
+		},
+		{
+			name:     "two existing parameters",
+			returnTo: testConsoleOrigin + "/settings?x=1&y=2",
+			want:     testConsoleOrigin + "/settings?x=1&y=2&calendar=connected",
+		},
+		{
+			name:     "a fragment stays last",
+			returnTo: testConsoleOrigin + "/settings?x=1#calendars",
+			want:     testConsoleOrigin + "/settings?x=1&calendar=connected#calendars",
+		},
+		{
+			name:     "the bare origin",
+			returnTo: testConsoleOrigin,
+			want:     testConsoleOrigin + "?calendar=connected",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, stub := newReturnToHandler(t, testConsoleOrigin)
+			rec := callback(h, "?code=abc&state="+url.QueryEscape(mintState(t, stub, "user-1", tc.returnTo)))
+			wantRedirect(t, rec, tc.want)
+		})
+	}
+}
+
+// The error shape gets the same treatment, since it appends two parameters rather than one.
+func TestCalendarCallback_returnTo_errorAppendsToAnExistingQuery(t *testing.T) {
+	h, stub := newReturnToHandler(t, testConsoleOrigin)
+	const returnTo = testConsoleOrigin + "/settings?x=1"
+
+	rec := callback(h, "?error=access_denied&state="+url.QueryEscape(mintState(t, stub, "user-1", returnTo)))
+
+	wantRedirect(t, rec, testConsoleOrigin+"/settings?x=1&calendar=error&reason=provider_denied")
+}
+
+// ⛔ The destination comes out of the CIPHERTEXT and nowhere else. A return_to on the
+// callback's own URL is attacker-controlled — the callback is a public route — so it must
+// not be able to steer the redirect even when the state is otherwise perfectly valid.
+func TestCalendarCallback_ignoresAReturnToOnItsOwnQuery(t *testing.T) {
+	h, stub := newReturnToHandler(t, testConsoleOrigin)
+
+	rec := callback(h, "?code=abc&return_to="+url.QueryEscape(testConsoleOrigin+"/evil")+
+		"&state="+url.QueryEscape(mintState(t, stub, "user-1", "")))
+
+	// The state carried no return_to, so this is the unchanged admin redirect.
+	wantRedirect(t, rec, "https://scheduler.example.test/admin/calendar?connected=true")
+}
+
+// Same, for a state that never decrypts: there is nowhere trustworthy to send the browser,
+// so it gets the JSON it always got rather than the query's suggestion.
+func TestCalendarCallback_undecryptableState_neverRedirects(t *testing.T) {
+	h, _ := newReturnToHandler(t, testConsoleOrigin)
+
+	rec := callback(h, "?code=abc&return_to="+url.QueryEscape(testConsoleOrigin+"/evil")+
+		"&state=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400", rec.Code)
+	}
+	if got := errorBody(t, rec); got != "invalid or missing state" {
+		t.Errorf("error = %q; want %q", got, "invalid or missing state")
+	}
+	if loc := rec.Header().Get("Location"); loc != "" {
+		t.Errorf("Location = %q; an undecryptable state must not redirect anywhere", loc)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CalendarCallback — without a return_to, nothing moved
+// ---------------------------------------------------------------------------
+
+// ⚠️ The ?error= branch moved to AFTER the decryption, and this is the case that pins what
+// that move must not change: a denial arriving with no state at all (a user clicking
+// "Cancel") still answers "OAuth error: …", not "invalid or missing state".
+func TestCalendarCallback_noReturnTo_keepsTodaysAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name, query string
+		status      int
+		body        string
+	}{
+		{name: "a denial with no state at all", query: "?error=access_denied",
+			status: http.StatusBadRequest, body: "OAuth error: access_denied"},
+		{name: "no state and no code", query: "",
+			status: http.StatusBadRequest, body: "invalid or missing state"},
+		{name: "a tampered state", query: "?code=abc&state=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			status: http.StatusBadRequest, body: "invalid or missing state"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newReturnToHandler(t, testConsoleOrigin)
+			rec := callback(h, tc.query)
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d; want %d — %s", rec.Code, tc.status, rec.Body.String())
+			}
+			if got := errorBody(t, rec); got != tc.body {
+				t.Errorf("error = %q; want %q", got, tc.body)
+			}
+		})
+	}
+}
+
+// The same three-plus outcomes, this time with a valid two-field state and no return_to in
+// it. Each has to be byte for byte what it was before the parameter existed.
+func TestCalendarCallback_noReturnTo_withAValidState(t *testing.T) {
+	t.Run("a denial answers JSON, not a redirect", func(t *testing.T) {
+		h, stub := newReturnToHandler(t, testConsoleOrigin)
+		rec := callback(h, "?error=access_denied&state="+url.QueryEscape(mintState(t, stub, "user-1", "")))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d; want 400", rec.Code)
+		}
+		if got := errorBody(t, rec); got != "OAuth error: access_denied" {
+			t.Errorf("error = %q; want %q", got, "OAuth error: access_denied")
+		}
+	})
+
+	t.Run("missing code", func(t *testing.T) {
+		h, stub := newReturnToHandler(t, testConsoleOrigin)
+		rec := callback(h, "?state="+url.QueryEscape(mintState(t, stub, "user-1", "")))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d; want 400", rec.Code)
+		}
+		if got := errorBody(t, rec); got != "missing code" {
+			t.Errorf("error = %q; want %q", got, "missing code")
+		}
+	})
+
+	t.Run("a failed exchange is still a 500", func(t *testing.T) {
+		h, stub := newReturnToHandler(t, testConsoleOrigin)
+		stub.exchangeErr = errors.New("the provider refused the code")
+		rec := callback(h, "?code=abc&state="+url.QueryEscape(mintState(t, stub, "user-1", "")))
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d; want 500", rec.Code)
+		}
+		if got := errorBody(t, rec); got != "internal error" {
+			t.Errorf("error = %q; want %q", got, "internal error")
+		}
+	})
+
+	t.Run("success still lands on the admin UI", func(t *testing.T) {
+		h, stub := newReturnToHandler(t, testConsoleOrigin)
+		rec := callback(h, "?code=abc&state="+url.QueryEscape(mintState(t, stub, "user-1", "")))
+		wantRedirect(t, rec, "https://scheduler.example.test/admin/calendar?connected=true")
+	})
+
+	// The oldest state shape of all — a bare user id, no provider — reaches the same place.
+	t.Run("a one-field legacy state still completes", func(t *testing.T) {
+		h, stub := newReturnToHandler(t, testConsoleOrigin)
+		state, err := stub.EncryptState("user-1")
+		if err != nil {
+			t.Fatalf("EncryptState: %v", err)
+		}
+		rec := callback(h, "?code=abc&state="+url.QueryEscape(state))
+		wantRedirect(t, rec, "https://scheduler.example.test/admin/calendar?connected=true")
+		if calls := stub.log.calls(); len(calls) != 1 || calls[0].userID != "user-1" {
+			t.Errorf("Exchange calls = %+v; want one for user-1", calls)
+		}
+	})
 }

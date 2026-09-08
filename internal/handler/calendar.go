@@ -142,11 +142,58 @@ func (h *Handler) ConnectCalendar(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, p.AuthURL(state), http.StatusFound) // #nosec G710 -- AuthURL is the provider's own fixed OAuth authorize endpoint (oauth2.Config.AuthCodeURL); only our own encrypted state is appended, no attacker-controlled destination
 }
 
+// The reason codes appended to a return_to when the round trip fails. Short, stable and
+// machine-readable: the platform console is what reads them, and it shows its own copy.
+const (
+	reasonProviderDenied = "provider_denied" // the provider sent ?error= instead of a code
+	reasonMissingCode    = "missing_code"    // no ?code= to exchange
+	reasonExchangeFailed = "exchange_failed" // the provider refused the code
+	reasonInvalidState   = "invalid_state"   // the state decrypted but named nobody reachable
+)
+
+// returnToWith appends one result to a validated return_to.
+//
+// The existing query is kept VERBATIM rather than re-encoded through url.Values, so a
+// platform's own parameters come back exactly as it wrote them, and the fragment stays
+// last — a naive "?" / "&" concatenation would append after a fragment and lose the lot.
+func returnToWith(returnTo, result string) string {
+	u, err := url.Parse(returnTo)
+	if err != nil {
+		// Unreachable: this value parsed at connect time, before it was encrypted. Answer
+		// with what we have rather than inventing a destination.
+		return returnTo
+	}
+	if u.RawQuery == "" {
+		u.RawQuery = result
+	} else {
+		u.RawQuery += "&" + result
+	}
+	return u.String()
+}
+
+// finishReturnTo sends the browser back to the platform console. Only ever called with a
+// returnTo that came out of the DECRYPTED state, which is the whole safety argument: it
+// was checked against PLATFORM_RETURN_ORIGINS at connect time by an authenticated user,
+// and nothing on the callback's own URL can influence it.
+func (h *Handler) finishReturnTo(w http.ResponseWriter, r *http.Request, returnTo, result string) {
+	http.Redirect(w, r, returnToWith(returnTo, result), http.StatusFound) // #nosec G710 -- returnTo comes out of the encrypted OAuth state, allowlisted at connect time; the callback's query cannot reach it
+}
+
 // CalendarCallback handles GET /v1/calendar/callback (public — browser redirect from the provider).
 // Validates the encrypted state, exchanges the auth code, and persists tokens.
 //
-// Phase 1 resolves to the primary provider (Google). When a second provider is added,
-// the provider will be encoded in the state and resolved here.
+// ⛔ The state is decrypted FIRST, before anything else about the request is acted on,
+// because the state is the only trustworthy thing on this URL — it is what says where the
+// person should end up. When it carries a return_to, every outcome is a 302 back to the
+// platform console carrying `?calendar=connected` or `?calendar=error&reason=<code>`;
+// without one, every outcome is exactly what it has always been (JSON errors, and the
+// redirect to this workspace's own /admin/calendar).
+//
+// ⚠️ The provider's ?error= branch is handled after the decryption but BEFORE the state is
+// judged invalid. Order matters twice: after, so a denied consent with a return_to goes
+// home instead of answering JSON; before, so a denial that arrives with no state at all —
+// which is what a user clicking "Cancel" produces — still answers the same
+// "OAuth error: <param>" it always did rather than "invalid or missing state".
 func (h *Handler) CalendarCallback(w http.ResponseWriter, r *http.Request) {
 	svc := h.getCal()
 	if svc == nil || !svc.Any() {
@@ -154,33 +201,49 @@ func (h *Handler) CalendarCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// All providers share the encryption key, so any provider's DecryptState
+	// recovers the state; we then resolve the provider it encodes.
+	raw, stateErr := svc.Primary().DecryptState(r.URL.Query().Get("state"))
+	p := svc.Primary()
+	var userID, returnTo string
+	if stateErr == nil && raw != "" {
+		var providerName string
+		providerName, userID, returnTo = parseCalendarState(raw)
+		if pr := svc.Provider(providerName); pr != nil {
+			p = pr
+		}
+	}
+
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
+		if returnTo != "" {
+			h.finishReturnTo(w, r, returnTo, "calendar=error&reason="+reasonProviderDenied)
+			return
+		}
 		h.writeError(w, http.StatusBadRequest, "OAuth error: "+errParam)
 		return
 	}
 
-	// All providers share the encryption key, so any provider's DecryptState
-	// recovers the state; we then resolve the provider it encodes.
-	raw, err := svc.Primary().DecryptState(r.URL.Query().Get("state"))
-	if err != nil || raw == "" {
+	if stateErr != nil || raw == "" {
+		// No usable state means no usable return_to either: there is nowhere to send the
+		// browser that did not come off this request's own query.
 		h.writeError(w, http.StatusBadRequest, "invalid or missing state")
 		return
 	}
-	p := svc.Primary()
-	userID := raw
-	if i := strings.Index(raw, stateSep); i >= 0 {
-		if pr := svc.Provider(raw[:i]); pr != nil {
-			p = pr
-		}
-		userID = raw[i+1:]
-	}
 	if userID == "" {
+		if returnTo != "" {
+			h.finishReturnTo(w, r, returnTo, "calendar=error&reason="+reasonInvalidState)
+			return
+		}
 		h.writeError(w, http.StatusBadRequest, "invalid or missing state")
 		return
 	}
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
+		if returnTo != "" {
+			h.finishReturnTo(w, r, returnTo, "calendar=error&reason="+reasonMissingCode)
+			return
+		}
 		h.writeError(w, http.StatusBadRequest, "missing code")
 		return
 	}
@@ -202,6 +265,10 @@ func (h *Handler) CalendarCallback(w http.ResponseWriter, r *http.Request) {
 		if wsErr != nil {
 			h.logger.ErrorContext(r.Context(), "calendar callback: resolve workspace",
 				"error", wsErr, "user_id", userID)
+			if returnTo != "" {
+				h.finishReturnTo(w, r, returnTo, "calendar=error&reason="+reasonInvalidState)
+				return
+			}
 			h.writeError(w, http.StatusBadRequest, "invalid or missing state")
 			return
 		}
@@ -209,6 +276,14 @@ func (h *Handler) CalendarCallback(w http.ResponseWriter, r *http.Request) {
 		if wsErr != nil {
 			h.logger.ErrorContext(r.Context(), "calendar callback: read workspace",
 				"error", wsErr, "workspace_id", wsID)
+			// Also invalid_state: from the console's point of view the state named a
+			// workspace this instance cannot resolve, which is the same answer whether the
+			// user row or the workspace row is the one missing. The JSON path keeps its 500,
+			// because there the distinction is an operator's to act on.
+			if returnTo != "" {
+				h.finishReturnTo(w, r, returnTo, "calendar=error&reason="+reasonInvalidState)
+				return
+			}
 			h.writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
@@ -224,11 +299,20 @@ func (h *Handler) CalendarCallback(w http.ResponseWriter, r *http.Request) {
 
 	if err := p.Exchange(r.Context(), userID, code, "primary"); err != nil {
 		h.logger.ErrorContext(r.Context(), "calendar callback: exchange", "error", err, "user_id", userID)
+		if returnTo != "" {
+			h.finishReturnTo(w, r, returnTo, "calendar=error&reason="+reasonExchangeFailed)
+			return
+		}
 		h.writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	// Multi-calendar: connecting is additive. The first connection becomes the destination
 	// (handled in the provider's saveToken); subsequent ones are conflict-check only.
+
+	if returnTo != "" {
+		h.finishReturnTo(w, r, returnTo, "calendar=connected")
+		return
+	}
 
 	// Back to the workspace's own admin UI, which is on its public host — h.baseURL is the
 	// identity host and would send the person somewhere their session does not exist.

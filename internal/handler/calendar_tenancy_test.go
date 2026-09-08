@@ -3,6 +3,9 @@ package handler
 import (
 	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/calnode/calnode/internal/caldav"
@@ -256,5 +259,160 @@ func TestCalendar_singleTenantReusesTheRegistry(t *testing.T) {
 	h.SetCalendar(nil)
 	if h.getCal() != nil {
 		t.Error("SetCalendar(nil) left a cached service behind")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The callback's own tenancy, with a return_to
+// ---------------------------------------------------------------------------
+//
+// The callback is Platform-wrapped: it arrives on the identity host with no tenant Host
+// and no session, so h.db is the platform handle and the workspace comes out of the state
+// via workspaceOfUser. Everything below runs through h.Platform(…) rather than calling the
+// method directly, because the wrapper IS the shape under test — a direct call would run
+// the exchange on whatever handle the test happened to build and prove nothing about which
+// workspace the connection lands in.
+//
+// Named TestPostgres_* deliberately: RequireTenantPair skips loudly without a real server,
+// and a skip that reads as a pass is how a tenancy assertion stops being one.
+
+// newReturnToTenantHandler is newCalHandler with the stub provider and a return-to
+// allowlist, so the OAuth surface is deterministic and the exchange writes a row.
+func newReturnToTenantHandler(t *testing.T) (*Handler, *db.DB, *stubCalProvider) {
+	t.Helper()
+	app, platform := dbtest.RequireTenantPair(t)
+
+	h := New(app, slog.New(slog.DiscardHandler))
+	h.SetMultiTenant(true)
+	h.SetBaseURL("https://app.calnode.test")
+	h.SetPlatformReturnOrigins([]string{testConsoleOrigin})
+
+	// Named for a real provider: calendar_connections.provider carries a CHECK
+	// constraint, so a row written under an invented name is refused and the callback
+	// reports exchange_failed — which would read exactly like the bug this test is for.
+	stub := newStubCalProvider(t, app, "caldav")
+	stub.log.write = true
+	base := calendar.NewService(app)
+	base.Register(stub)
+	h.SetCalendar(base)
+
+	return h, platform, stub
+}
+
+// seedReturnToWorkspace creates a workspace and its owner and nothing else, so every
+// calendar_connections row the test sees was written by the callback.
+func seedReturnToWorkspace(t *testing.T, h *Handler, platform *db.DB, wsID string) string {
+	t.Helper()
+	if _, err := platform.Exec(
+		`INSERT INTO workspaces (id, slug, public_host, region, status) VALUES (?, ?, ?, '', 'active')`,
+		wsID, wsID, wsID+".example.com"); err != nil {
+		t.Fatalf("seed workspace %s: %v", wsID, err)
+	}
+	userID := wsID + "-user"
+	if _, err := h.db.ForWorkspace(wsID).Exec(
+		`INSERT INTO users (id, email, name) VALUES (?, ?, ?)`,
+		userID, wsID+"@example.com", wsID); err != nil {
+		t.Fatalf("seed user for %s: %v", wsID, err)
+	}
+	return userID
+}
+
+func stubConnectionWorkspaces(t *testing.T, platform *db.DB) map[string]string {
+	t.Helper()
+	rows, err := platform.Query(
+		`SELECT user_id, workspace_id FROM calendar_connections WHERE provider = 'caldav'`)
+	if err != nil {
+		t.Fatalf("read connections: %v", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	out := map[string]string{}
+	for rows.Next() {
+		var user, ws string
+		if err := rows.Scan(&user, &ws); err != nil {
+			t.Fatalf("scan connection: %v", err)
+		}
+		out[user] = ws
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate connections: %v", err)
+	}
+	return out
+}
+
+// The success path end to end on Postgres: the state names a user, workspaceOfUser
+// resolves the tenant from it on the platform handle, the exchange runs on THAT
+// workspace's bound handle, and the browser goes back to the console.
+func TestPostgres_calendarCallbackReturnToLandsInTheUsersWorkspace(t *testing.T) {
+	h, platform, stub := newReturnToTenantHandler(t)
+
+	seedReturnToWorkspace(t, h, platform, "acme")
+	userB := seedReturnToWorkspace(t, h, platform, "globex")
+
+	const returnTo = testConsoleOrigin + "/settings?x=1"
+	state := mintState(t, stub, userB, returnTo)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/v1/calendar/callback?code=abc&state="+url.QueryEscape(state), nil)
+	h.Platform((*Handler).CalendarCallback)(rec, req)
+
+	wantRedirect(t, rec, testConsoleOrigin+"/settings?x=1&calendar=connected")
+
+	// ⛔ The row, not the redirect, is the assertion that matters. A 302 would look
+	// identical if the exchange had run on the unbound platform handle and written
+	// nothing, or written into the wrong tenant.
+	conns := stubConnectionWorkspaces(t, platform)
+	if len(conns) != 1 {
+		t.Fatalf("connections = %v; want exactly one, for %s", conns, userB)
+	}
+	if got := conns[userB]; got != "globex" {
+		t.Errorf("%s's connection landed in workspace %q; want globex", userB, got)
+	}
+	if calls := stub.log.calls(); len(calls) != 1 || calls[0].userID != userB {
+		t.Errorf("Exchange calls = %+v; want one for %s", calls, userB)
+	}
+}
+
+// A state that decrypts but names a user this instance cannot resolve to a workspace. The
+// return_to came out of the ciphertext, so it is still where the person goes — with the
+// reason, rather than a JSON body on an OAuth callback URL.
+func TestPostgres_calendarCallbackReturnToUnresolvableWorkspace(t *testing.T) {
+	h, platform, stub := newReturnToTenantHandler(t)
+	seedReturnToWorkspace(t, h, platform, "acme")
+
+	const returnTo = testConsoleOrigin + "/settings"
+	state := mintState(t, stub, "nobody-at-all", returnTo)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/v1/calendar/callback?code=abc&state="+url.QueryEscape(state), nil)
+	h.Platform((*Handler).CalendarCallback)(rec, req)
+
+	wantRedirect(t, rec, returnTo+"?calendar=error&reason=invalid_state")
+	if calls := stub.log.calls(); len(calls) != 0 {
+		t.Errorf("Exchange ran %+v; an unresolvable workspace must not reach the exchange", calls)
+	}
+	if conns := stubConnectionWorkspaces(t, platform); len(conns) != 0 {
+		t.Errorf("connections = %v; want none", conns)
+	}
+}
+
+// The same tenancy, with no return_to: the redirect is the workspace's OWN admin UI on its
+// public host, not the identity host. Pinned here because the return_to branch now sits
+// beside it and a mistake in either is a person sent somewhere their session does not exist.
+func TestPostgres_calendarCallbackWithoutReturnToStillLandsOnTheTenantAdminUI(t *testing.T) {
+	h, platform, stub := newReturnToTenantHandler(t)
+
+	userB := seedReturnToWorkspace(t, h, platform, "globex")
+	state := mintState(t, stub, userB, "")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/v1/calendar/callback?code=abc&state="+url.QueryEscape(state), nil)
+	h.Platform((*Handler).CalendarCallback)(rec, req)
+
+	wantRedirect(t, rec, "https://globex.example.com/admin/calendar?connected=true")
+	if got := stubConnectionWorkspaces(t, platform)[userB]; got != "globex" {
+		t.Errorf("%s's connection landed in workspace %q; want globex", userB, got)
 	}
 }
