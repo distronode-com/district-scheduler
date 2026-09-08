@@ -35,7 +35,8 @@ type keyExecer interface {
 // default resolves to the same value this names, so single-tenant and credential-scoped
 // callers write byte-identical rows to the ones they wrote before.
 //
-// managed marks a row the PLATFORM owns rather than the workspace. See migration 00063.
+// managed marks a row the PLATFORM owns: hidden from GET /v1/api-keys, refused by
+// DELETE /v1/api-keys/{id}, and still accepted by RequireAuth. See migration 00063.
 //
 // now is passed in rather than read here so a caller writing several rows in one
 // transaction stamps them all with one timestamp, and so CreateAPIKey's response carries
@@ -57,11 +58,16 @@ func mintAPIKey(ctx context.Context, ex keyExecer, workspaceID, userID, name str
 }
 
 // ListAPIKeys handles GET /v1/api-keys.
+//
+// ⛔ Managed keys are omitted. A managed key is the platform's credential, minted through
+// /v1/platform/workspaces/{id}/users/{uid}/api-keys and spent by an integration the
+// workspace's own members do not administer; listing it here offered a delete button for a
+// row DeleteAPIKey now refuses, which is worse than not showing it at all.
 func (h *Handler) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFromContext(r.Context())
 	rows, err := h.db.QueryContext(r.Context(), `
 		SELECT id, name, created_at, last_used_at
-		FROM api_keys WHERE user_id = ?
+		FROM api_keys WHERE user_id = ? AND managed = 0
 		ORDER BY created_at DESC`, user.ID)
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "list api keys", "error", err)
@@ -134,12 +140,35 @@ func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteAPIKey handles DELETE /v1/api-keys/{id}.
+//
+// ⛔ A managed key answers 403, not 404. The row exists and the caller owns the user it
+// hangs off — telling them it does not exist would be a lie they can disprove, and the
+// honest answer is the actionable one: the platform minted it and only the platform can
+// revoke it. The DELETE is still scoped by user_id first, so a key belonging to somebody
+// else is 404 exactly as before, managed or not.
 func (h *Handler) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFromContext(r.Context())
 	id := r.PathValue("id")
 
+	var managed int
+	err := h.db.QueryRowContext(r.Context(),
+		`SELECT managed FROM api_keys WHERE id = ? AND user_id = ?`, id, user.ID).Scan(&managed)
+	if err == sql.ErrNoRows {
+		h.writeError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "delete api key: load", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if managed != 0 {
+		h.writeError(w, http.StatusForbidden, managedRowMessage)
+		return
+	}
+
 	res, err := h.db.ExecContext(r.Context(), `
-		DELETE FROM api_keys WHERE id = ? AND user_id = ?`, id, user.ID)
+		DELETE FROM api_keys WHERE id = ? AND user_id = ? AND managed = 0`, id, user.ID)
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "delete api key", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "internal error")
@@ -151,3 +180,7 @@ func (h *Handler) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// managedRowMessage is the one refusal text for a managed api_keys or webhooks row, so the
+// website and the admin UI can match on a single string across both surfaces.
+const managedRowMessage = "managed by your platform"

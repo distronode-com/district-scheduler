@@ -115,6 +115,10 @@ func (h *Handler) PatchWebhook(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, http.StatusNotFound, "webhook not found")
 			return
 		}
+		if errors.Is(err, webhook.ErrManaged) {
+			h.writeError(w, http.StatusForbidden, managedRowMessage)
+			return
+		}
 		h.logger.ErrorContext(r.Context(), "update webhook", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -146,6 +150,12 @@ func (h *Handler) ListWebhooks(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// DeleteWebhook handles DELETE /v1/webhooks/{id}.
+//
+// ⛔ A managed webhook answers 403, not 404 — the row exists, the caller owns the user it
+// hangs off, and the actionable answer is that the platform provisioned it. This is the
+// subscription an integration receives every booking on; deleting it used to be one click
+// on the settings page and broke the integration with nothing on either side to say so.
 func (h *Handler) DeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFromContext(r.Context())
 	id := r.PathValue("id")
@@ -153,6 +163,10 @@ func (h *Handler) DeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	if err := h.webhookSvc.Delete(r.Context(), user.ID, id); err != nil {
 		if errors.Is(err, webhook.ErrNotFound) {
 			h.writeError(w, http.StatusNotFound, "webhook not found")
+			return
+		}
+		if errors.Is(err, webhook.ErrManaged) {
+			h.writeError(w, http.StatusForbidden, managedRowMessage)
 			return
 		}
 		h.logger.ErrorContext(r.Context(), "delete webhook", "error", err)

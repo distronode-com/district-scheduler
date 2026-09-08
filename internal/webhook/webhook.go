@@ -24,6 +24,11 @@ import (
 
 var ErrNotFound = errors.New("webhook: not found")
 
+// ErrManaged is returned by Update and Delete for a row the PLATFORM owns (migration
+// 00063). It is deliberately distinct from ErrNotFound: the row exists and the caller owns
+// the user it hangs off, so the handler answers 403 rather than 404 — see DeleteWebhook.
+var ErrManaged = errors.New("webhook: managed by the platform")
+
 type Webhook struct {
 	ID        string
 	UserID    string
@@ -251,8 +256,12 @@ func (s *Service) Create(ctx context.Context, userID, url string, events []strin
 }
 
 // Update applies partial changes to a webhook owned by userID. Nil pointers are
-// left unchanged. Returns ErrNotFound if no such webhook exists for the user.
+// left unchanged. Returns ErrNotFound if no such webhook exists for the user, and
+// ErrManaged if it exists and belongs to the platform.
 func (s *Service) Update(ctx context.Context, userID, id string, events, fields *[]string) error {
+	if err := s.checkNotManaged(ctx, userID, id); err != nil {
+		return err
+	}
 	var set []string
 	var args []any
 	if events != nil {
@@ -281,10 +290,14 @@ func (s *Service) Update(ctx context.Context, userID, id string, events, fields 
 }
 
 // List returns all webhooks for a user, most recent first.
+//
+// ⛔ Managed rows are omitted. This is the ADMINISTRATION side; the DELIVERY side is
+// Enqueue below, whose read deliberately does NOT filter on managed — hiding a
+// subscription from its owner's settings page must never stop it receiving events.
 func (s *Service) List(ctx context.Context, userID string) ([]Webhook, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, url, events, fields, is_active, created_at
-		FROM webhooks WHERE user_id = ? ORDER BY created_at DESC`, userID)
+		FROM webhooks WHERE user_id = ? AND managed = 0 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("webhook: list: %w", err)
 	}
@@ -316,15 +329,42 @@ func (s *Service) List(ctx context.Context, userID string) ([]Webhook, error) {
 	return out, rows.Err()
 }
 
-// Delete removes a webhook owned by userID. Returns ErrNotFound if it doesn't exist.
+// Delete removes a webhook owned by userID. Returns ErrNotFound if it doesn't exist, and
+// ErrManaged if it exists and belongs to the platform.
 func (s *Service) Delete(ctx context.Context, userID, id string) error {
+	if err := s.checkNotManaged(ctx, userID, id); err != nil {
+		return err
+	}
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM webhooks WHERE id = ? AND user_id = ?`, id, userID)
+		`DELETE FROM webhooks WHERE id = ? AND user_id = ? AND managed = 0`, id, userID)
 	if err != nil {
 		return fmt.Errorf("webhook: delete: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// checkNotManaged reports why a credential caller may not change this row: ErrNotFound
+// when it is not theirs (or does not exist), ErrManaged when it is theirs but the platform
+// owns it, nil otherwise.
+//
+// A read before the write rather than an extra predicate on the write, because the two
+// refusals are different answers — 404 and 403 — and `WHERE ... AND managed = 0` alone
+// affects zero rows in both cases, which would report a row that plainly exists as absent.
+func (s *Service) checkNotManaged(ctx context.Context, userID, id string) error {
+	var managed int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT managed FROM webhooks WHERE id = ? AND user_id = ?`, id, userID).Scan(&managed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("webhook: read managed: %w", err)
+	}
+	if managed != 0 {
+		return ErrManaged
 	}
 	return nil
 }
@@ -427,6 +467,13 @@ func buildData(bd enrichedBooking, fields []string) map[string]any {
 // Enqueue finds all active webhooks for p.HostID that subscribe to event,
 // and creates a webhook_deliveries + jobs row pair for each. Failures are
 // soft-errors (caller logs; a booking is already committed).
+//
+// ⛔ NO `managed = 0` HERE, and it is not an omission. `managed` hides a row from the
+// workspace's own settings page and refuses its edits (List/Update/Delete above); it says
+// nothing about whether the subscription is live. Filtering it here would make the
+// provisioning webhook — the one the platform receives every booking on — stop delivering
+// the moment migration 00063 marked it, silently, with the row still present and active.
+// TestManagedWebhookStillDelivers pins this.
 func (s *Service) Enqueue(ctx context.Context, event string, p BookingPayload) error {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, events, fields FROM webhooks
