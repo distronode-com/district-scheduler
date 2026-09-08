@@ -41,6 +41,21 @@ func (h *Handler) CreateWebhook(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "url must be a valid http or https URL")
 		return
 	}
+	// ⛔ `http://` stays legal on a single-tenant instance and is refused on a
+	// multi-tenant one (L1). A booking payload carries the attendee's name, email address
+	// and intake answers, so plaintext delivery is a disclosure — but a self-hoster
+	// posting to a receiver on their own machine is the intended configuration of a
+	// self-hostable product, and the tier of that judgement is the same one the CalDAV
+	// guard makes: on a multi-tenant instance the URL is a TENANT's, the traffic leaves
+	// the operator's network, and the operator is the one whose customers' data it is.
+	//
+	// Enforced here rather than only in the platform's own op catalog, which already
+	// requires https, because a tenant admin holds a raw `cno_` key their Developer tab
+	// minted and can reach this route without going through it.
+	if h.multiTenant && u.Scheme != "https" {
+		h.writeError(w, http.StatusBadRequest, "url must be https: booking payloads carry attendee details")
+		return
+	}
 	if err := validateWebhookURL(r.Context(), u); err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return

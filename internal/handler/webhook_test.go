@@ -339,3 +339,65 @@ func TestCreateWebhook_ssrf_cgnat_returns400(t *testing.T) {
 		t.Errorf("status = %d; want 400 for CGNAT URL", rec.Code)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// L1 — https only in multi-tenant mode
+// ---------------------------------------------------------------------------
+
+// ⛔ A booking payload carries the attendee's name, email address and intake answers, so
+// plaintext delivery is a disclosure. It stays legal on a single-tenant instance anyway:
+// a self-hoster posting to a receiver on their own machine is the intended configuration
+// of a self-hostable product, and it is their own customers' data crossing their own
+// network. On a multi-tenant instance the URL is a TENANT's, the traffic leaves the
+// OPERATOR's network, and the answer flips.
+func TestCreateWebhook_multiTenantRefusesPlainHTTP(t *testing.T) {
+	h, apiKey, _ := setupWorkspace(t)
+	h.SetMultiTenant(true)
+
+	req := authReq(http.MethodPost, "/v1/webhooks",
+		`{"url":"http://example.com/hook","events":["booking.created"]}`, apiKey)
+	rec := httptest.NewRecorder()
+	h.RequireAuth(h.CreateWebhook)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 — %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.Contains(body.Error, "https") {
+		t.Errorf("error = %q; it must say what to change", body.Error)
+	}
+}
+
+func TestCreateWebhook_multiTenantAcceptsHTTPS(t *testing.T) {
+	h, apiKey, _ := setupWorkspace(t)
+	h.SetMultiTenant(true)
+
+	req := authReq(http.MethodPost, "/v1/webhooks",
+		`{"url":"https://example.com/hook","events":["booking.created"]}`, apiKey)
+	rec := httptest.NewRecorder()
+	h.RequireAuth(h.CreateWebhook)(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; want 201 — %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Single-tenant is unchanged, and this is the assertion that keeps it that way.
+func TestCreateWebhook_singleTenantStillAcceptsPlainHTTP(t *testing.T) {
+	h, apiKey, _ := setupWorkspace(t)
+
+	req := authReq(http.MethodPost, "/v1/webhooks",
+		`{"url":"http://example.com/hook","events":["booking.created"]}`, apiKey)
+	rec := httptest.NewRecorder()
+	h.RequireAuth(h.CreateWebhook)(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; want 201 — a self-hoster's own receiver is their business — %s",
+			rec.Code, rec.Body.String())
+	}
+}
