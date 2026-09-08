@@ -50,7 +50,13 @@
   --bk-fg-2: #393946;
   --bk-body: #4b4b58;
   --bk-muted: #60606c;
-  --bk-subtle: #8b8b9c;
+  /* #8b8b9c until F3b, which is 3.35:1 on the card's #fff — a serious axe contrast
+     finding on .ch / .tz-label / .hint / .scheduled-label / .row-label, all 11px
+     copy. #6e6e7c measures 5.02:1 on #fff, 4.89:1 on --bk-elevated and 4.77:1 on
+     --bk-page-bg, and stays a visible step lighter than --bk-muted (6.20:1).
+     Computed from the hex values, not judged by eye. The matching floor and the
+     reasoning live on the token in booking.css. */
+  --bk-subtle: #6e6e7c;
   --bk-border: #e0e0e6;
   --bk-border-strong: #c6c6d2;
   --bk-surface: #f3f3f7;
@@ -160,8 +166,13 @@ body {
 <img class="brand-banner" src="{{.BannerURL}}" alt="" style="opacity:{{.BannerOpacity}};">
 {{end}}
 
+{{/* <main class="card"> on BOTH branches, for the reason book.html gives: the card is a
+     flex item of the body's column layout, so putting the landmark on it rather than
+     around it changes no box and keeps document.querySelector('.card') working. The two
+     are the arms of one {{if}}, so exactly one <main> is ever rendered — which is the
+     whole of the landmark-one-main rule, and would be broken by making them siblings. */}}
 {{if .TokenInvalid}}
-<div class="card" id="token-invalid-view">
+<main class="card" id="token-invalid-view">
   <section class="right-col">
     <div class="state-page">
       <div class="state-icon warn" aria-hidden="true">
@@ -171,10 +182,10 @@ body {
       <p>{{call .T "link_expired_text"}}</p>
     </div>
   </section>
-</div>
+</main>
 
 {{else}}
-<div class="card">
+<main class="card">
 
   <!-- Info panel -->
   <aside class="info">
@@ -289,7 +300,7 @@ body {
 
   </section>
   {{end}}
-</div>
+</main>
 {{end}}
 
 {{template "legalFooter" .}}

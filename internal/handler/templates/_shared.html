@@ -138,7 +138,30 @@
 
 {{/* Month nav + the day grid. The grid (#cal) is empty here and filled by
      booking-logic.js. Each page wraps this in its own <section> (book shows it
-     inline + a timezone picker; manage starts it hidden + adds a Back button). */}}
+     inline + a timezone picker; manage starts it hidden + adds a Back button).
+
+     ⛔ #cal is role="group", NOT role="grid", and it carried role="grid" until the
+     F3b audit. `grid` requires role="row" children holding role="gridcell"s, and
+     what the renderers actually emit is a FLAT list — seven .ch header cells, then
+     blank spacers for the month's start offset, then one <button class="cd"> per
+     day — placed into weeks by `grid-template-columns: repeat(7, …)` and nothing
+     else. There is no row in the DOM on any of the three surfaces, so a screen
+     reader announced an empty grid (axe: aria-required-children, critical).
+
+     Rows were considered and rejected twice over. Wrapping each week would make the
+     wrapper the CSS grid item and collapse the layout unless the wrappers take
+     `display: contents` — which is the very trap this fix exists to avoid, since
+     `display: contents` has a history of dropping the element's role from the
+     accessibility tree. And `grid` carries a keyboard contract (arrow-key roving
+     tabindex across cells) that none of the three surfaces implements: claiming it
+     while shipping plain Tab order is a worse lie than claiming nothing.
+
+     `group` describes what this honestly is — a labelled set of day buttons. It is
+     named by #month-label, which is `aria-live="polite"`, so the visible month is
+     both the group's accessible name and announced when it changes. The enclosing
+     <section> on each page carries the static "date picker" label, so the pair
+     reads as "Date picker → September 2026". embed.js does the same, with the month
+     string passed as aria-label because the widget builds its DOM in JS. */}}
 {{define "calendarGrid"}}<div class="cal-nav">
       <span id="month-label" class="month-label" aria-live="polite"></span>
       <button id="prev-btn" aria-label="{{call .T "prev_month_aria"}}">
@@ -148,7 +171,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
       </button>
     </div>
-    <div id="cal" class="cal-grid" role="grid"></div>{{end}}
+    <div id="cal" class="cal-grid" role="group" aria-labelledby="month-label"></div>{{end}}
 
 {{/* Event meta line (duration · location · price) for the info panel. Location and
      price are omitted when their label is empty, so a page that doesn't set them

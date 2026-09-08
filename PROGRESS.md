@@ -2574,3 +2574,110 @@ admin-or-host, `GetBookingNotes` is deliberately admin-wide and has an
 `audit/claims.yaml` claim saying so), so narrowing it is an access-model decision that
 would want the MCP `get_booking` tool moved in the same commit. Recorded in the handler's
 doc comment rather than fixed here.
+
+## F3b — the booking page's three accessibility findings, on all three surfaces
+
+A browser audit of the live `/book/phone-consultation` pages returned three axe
+violations. All three live in the booking UI, so all three had to be answered on the
+booking page, the manage page **and** the embed widget — the rule in CLAUDE.md.
+
+### 1. `aria-required-children` (critical) — the calendar was not a grid
+
+`_shared.html`'s `calendarGrid` partial put `role="grid"` on `#cal`, and `#cal` holds a
+**flat** list: seven `.ch` header cells, blank spacers for the month's start offset, then
+one `<button class="cd">` per day. The weeks are produced by
+`grid-template-columns: repeat(7, …)` and by nothing else — there is no row in the DOM on
+any surface. `grid` promises `role="row"` children holding gridcells, so a screen reader
+was told to expect rows, found none, and announced an empty grid.
+
+⛔ **Real rows were considered and rejected twice over.** A per-week wrapper becomes the
+CSS grid item and collapses the layout unless it takes `display: contents`, which has a
+history of dropping the element's role from the accessibility tree — the same class of bug
+this fix exists to remove. And `grid` carries a keyboard contract (arrow-key roving
+tabindex across cells) that none of the three surfaces implements; declaring it while
+shipping plain Tab order is a worse lie than declaring nothing.
+
+`role="group"` + `aria-labelledby="month-label"` describes what the markup honestly is: a
+labelled set of day buttons. `#month-label` is already `aria-live="polite"`, so the visible
+month is both the group's name and announced on change, and the enclosing `<section>`
+carries the static "date picker" label — the pair reads "Date picker → September 2026".
+
+⚠️ **The widget had the opposite problem and it would have been missed by fixing only what
+the audit named.** `embed.js` set no role at all, so its calendar announced nothing. It now
+takes the same group role with the month string as `aria-label` (it rebuilds the pane on
+every month change, so there is no id to point at), its month span gained the `aria-live`
+the pages had, and its `.cal-col` gained the `date_picker_aria` label the pages had.
+
+### 2. Colour contrast (serious) — and the finding was mis-attributed
+
+⛔ **The primary button's hover fill does NOT fail, and the packet brief said it did.**
+Measured from the shipped hex rather than accepted: `--bk-on-primary` on
+`--bk-primary-hover` is **14.68:1** on booking.css's neutral defaults (`#ffffff` on
+`#1f2937`) and **9.41:1** on the pages' Distronode palette (`#ffffff` on `#2c24cc`). There
+is also no dark scheme on these surfaces to check it in — no `prefers-color-scheme` block
+exists in `booking.css` or either page.
+
+What does fail is `--bk-subtle`, and it is the worst contrast on the surface. It is not
+decoration: it is the text colour of `.ch` (the day-of-week headers), `.tz-label`, `.hint`,
+the timezone `<select>`, and manage's `.scheduled-label` / `.row-label` — all real 11px
+copy on the card's `#fff`.
+
+| palette | token | before | after |
+|---|---|---|---|
+| booking.css defaults (widget) | `--bk-subtle` | `#9ca3af` — **2.54:1** | `#697382` — **4.80:1** |
+| book.html / manage.html (Distronode) | `--bk-subtle` | `#8b8b9c` — **3.35:1** | `#6e6e7c` — **5.02:1** |
+
+Against `--bk-elevated` the new values are 4.59:1 and 4.89:1; on the pages' `--bk-page-bg`,
+4.77:1. ⚠️ On the neutral default palette the subtle tier now sits very close to
+`--bk-muted` (4.83:1). That is the palette's doing rather than the fix's — that set has no
+room for a third grey above 4.5:1 — and the Distronode palette, which does have room, keeps
+a visible gap. Re-spacing means darkening `--bk-muted` first.
+
+⛔ **The widget's `.powered` line held the `#9ca3af` LITERAL rather than the token**, so
+correcting the shared sheet alone would have left exactly one string on one surface still
+at 2.54:1. It now reads `var(--bk-subtle)`.
+
+Not touched, deliberately: `.cd:disabled` (1.69:1) and `.slot-btn.taken` (3.27:1) are
+disabled controls, which WCAG 1.4.3 exempts, and both have to keep reading as unavailable.
+
+### 3. `landmark-one-main` (moderate) — no `<main>` on either page
+
+`<main class="card">`, not `<main><div class="card">`. The card is a flex item of the body's
+column layout and carries `width:100%` / `max-width:860px` plus the mobile step-flow classes;
+an extra wrapper would have become the flex item and changed the box. Putting the landmark on
+the card is layout-neutral — every `.card` rule still applies and `document.querySelector('.card')`
+still finds it.
+
+⚠️ manage.html has **two** cards, the arms of one `{{if .TokenInvalid}}`. Both are `<main>`,
+which yields exactly one per rendered document; making them siblings would trade one violation
+for another, and the test renders all four states (valid / expired / cancelled / book) and
+counts.
+
+⛔ The embed adds **none**. It renders into a customer's own document, which has its own
+`<main>`; a second one there would be this same violation on someone else's page, where nobody
+reading this repo would ever find it.
+
+### Tests, and the one that nearly lied
+
+Three new tests in `booking_surfaces_contract_test.go`, next to the three-surface contract
+they extend. `TestBookingSubtleTextMeetsContrast` **computes** WCAG relative luminance in Go
+from the token values parsed out of the shipped bytes — not from a table copied into the test,
+which would keep passing after the palette changed — and it also pins the button hover the
+brief named, so the "it does not fail" claim above stays true rather than remaining an
+observation. Each was verified to fail when its fix is reverted: role restored → 4 errors,
+tokens restored → the exact 2.54 / 3.35 above (a second implementation agreeing with the
+first), `<main>` removed → 2 errors.
+
+⚠️ **`TestBookingCalendarIsAGroupNotAGrid` is a SOURCE scan, and its first run redded on a
+COMMENT.** An explanatory comment in `embed.js` quoted the forbidden attribute in prose, and
+the scan cannot tell prose from markup. The comment was reworded and now says why. Same shape
+as the monolith's `main-landmark.test.ts`, which blanks block comments and not `//` ones: near
+a source-scanning gate, never spell out the token the gate forbids.
+
+### Not done
+
+No `next dev`-style visual verification: this worktree has no browser and the packet is
+template-local. The layout claims above rest on the CSS being unchanged and the landmark
+being placed on an existing element rather than around it, plus the full SQLite suite; a
+desktop and mobile pass on each of the three surfaces is still worth doing before release,
+which is what CLAUDE.md asks for after any calendar change.

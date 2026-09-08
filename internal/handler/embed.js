@@ -148,7 +148,10 @@
     '.card.step-cal .right-col{display:none;}' +
     '.card.step-right .cal-col{display:none;}' +
     '.card.step-right .info{display:none;}' +
-    '.powered{text-align:center;font-size:.6875rem;color:#9ca3af;padding:10px;}' +
+    // var(--bk-subtle), not the #9ca3af literal it held until F3b: that was the same
+    // 2.54:1-on-white contrast failure the token was raised to fix, and a literal here
+    // would have kept this one line failing after the shared sheet was corrected.
+    '.powered{text-align:center;font-size:.6875rem;color:var(--bk-subtle);padding:10px;}' +
     '.powered a{color:#6b7280;text-decoration:none;font-weight:600;}' +
     '.powered a:hover{text-decoration:underline;}' +
     '.loading{padding:48px 24px;color:#6b7280;font-size:.875rem;text-align:center;}' +
@@ -419,7 +422,19 @@
 
     calPane() {
       var self = this, st = this.state, first = st.month;
-      var grid = el('div', { class: 'cal-grid' });
+      var monthLabel = first.toLocaleDateString(this.locale, { month: 'long', year: 'numeric' });
+      // A group role, deliberately not the grid one — see the long note on
+      // "calendarGrid" in templates/_shared.html. The pages declared themselves a grid
+      // over the same flat seven-column button list and so announced an empty grid;
+      // this surface declared nothing and announced nothing. Both are now a labelled
+      // group, named by the visible month. aria-label rather than aria-labelledby
+      // because the widget builds its DOM in JS and re-renders the whole pane on every
+      // month change, so the string is always current and there is no id to point at.
+      //
+      // ⛔ The forbidden role is spelled out nowhere in this comment ON PURPOSE.
+      // TestBookingCalendarIsAGroupNotAGrid is a source scan over these bytes, and prose
+      // quoting the attribute reds it exactly as a real regression would.
+      var grid = el('div', { class: 'cal-grid', role: 'group', 'aria-label': monthLabel });
       this.dow.forEach(function (d) { grid.appendChild(el('div', { class: 'ch', text: d })); });
       for (var i = 0; i < mondayIndex(first); i++) grid.appendChild(el('div', { class: 'cd', text: '' }));
       var days = endOfMonth(first).getDate(), todayKey = ymd(new Date());
@@ -438,10 +453,17 @@
       var next = el('button', { 'aria-label': t(this.i18n, 'next_month_aria'), html: SVG_NEXT });
       next.addEventListener('click', function () { self.nav(1); });
       var nav = el('div', { class: 'cal-nav' }, [
-        el('span', { class: 'month-label', text: first.toLocaleDateString(this.locale, { month: 'long', year: 'numeric' }) }),
+        // aria-live so a month change is announced, matching #month-label on the pages.
+        el('span', { class: 'month-label', 'aria-live': 'polite', text: monthLabel }),
         prev, next,
       ]);
-      return el('section', { class: 'cal-col' }, [nav, grid, el('p', { class: 'tz-label', text: t(this.i18n, 'times_shown_in') + TZ })]);
+      // ⛔ <section>, and NOT <main>: this component renders inside a customer's own
+      // page, which has (or should have) its own single <main>. A second one here would
+      // be the very landmark-one-main violation the pages were fixed for, and it would
+      // be the host site's problem rather than ours to find. The aria-label matches
+      // book.html / manage.html's .cal-col so all three name the picker the same way.
+      return el('section', { class: 'cal-col', 'aria-label': t(this.i18n, 'date_picker_aria') },
+        [nav, grid, el('p', { class: 'tz-label', text: t(this.i18n, 'times_shown_in') + TZ })]);
     }
 
     rightPane() {

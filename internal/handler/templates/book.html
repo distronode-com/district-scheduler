@@ -50,7 +50,13 @@
   --bk-fg-2: #393946;
   --bk-body: #4b4b58;
   --bk-muted: #60606c;
-  --bk-subtle: #8b8b9c;
+  /* #8b8b9c until F3b, which is 3.35:1 on the card's #fff — a serious axe contrast
+     finding on .ch / .tz-label / .hint / .scheduled-label / .row-label, all 11px
+     copy. #6e6e7c measures 5.02:1 on #fff, 4.89:1 on --bk-elevated and 4.77:1 on
+     --bk-page-bg, and stays a visible step lighter than --bk-muted (6.20:1).
+     Computed from the hex values, not judged by eye. The matching floor and the
+     reasoning live on the token in booking.css. */
+  --bk-subtle: #6e6e7c;
   --bk-border: #e0e0e6;
   --bk-border-strong: #c6c6d2;
   --bk-surface: #f3f3f7;
@@ -155,7 +161,15 @@ body {
 </div>
 {{end}}
 
-<div class="card">
+{{/* <main class="card">, not <main><div class="card">. The card is a flex item of the
+     body's column layout and carries width:100%/max-width:860px plus the mobile
+     step-flow rules (.card.m-cal / .card.m-right); an extra wrapper would become the
+     flex item and change the box. Putting the landmark ON the card is layout-neutral —
+     every .card rule still applies, and document.querySelector('.card') below still
+     finds it — while giving the page the one <main> it had none of (axe:
+     landmark-one-main, moderate). The header/banner above and the footer below stay
+     outside it, which is what they are. */}}
+<main class="card">
 
   <!-- Info panel -->
   <aside class="info">
@@ -279,7 +293,7 @@ body {
     </div>
 
   </section>
-</div>
+</main>
 
 {{template "legalFooter" .}}
 

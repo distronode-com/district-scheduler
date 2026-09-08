@@ -28,7 +28,18 @@
   --bk-fg-2: #374151;           /* secondary text */
   --bk-body: #4b5563;           /* body copy */
   --bk-muted: #6b7280;          /* muted labels */
-  --bk-subtle: #9ca3af;         /* subtlest text, icons */
+  /* ⛔ 4.5:1 ON WHITE IS A FLOOR HERE, NOT A PREFERENCE. This token is not decoration:
+     it is the text colour of .ch (the day-of-week headers), .tz-label, .hint and the
+     timezone <select>, all real 11px copy on the card's #fff. It was #9ca3af, which is
+     2.54:1 — a serious axe finding, and the worst contrast on the surface.
+     #697382 measures 4.80:1 on #fff and 4.59:1 on --bk-elevated (#f9fafb), computed
+     from the hex rather than eyeballed.
+     ⚠️ It now sits very close to --bk-muted (4.83:1), and that is the palette's doing
+     rather than a mistake: this neutral default set has no room for a third grey tier
+     above the floor. The pages' Distronode palette does have room and keeps a visible
+     gap (#6e6e7c subtle vs #60606c muted). If this set is ever re-spaced, darken
+     --bk-muted first and let subtle follow it, not the reverse. */
+  --bk-subtle: #697382;         /* subtlest text, icons — >= 4.5:1 on #fff */
   --bk-border: #e5e7eb;
   --bk-border-strong: #d1d5db;
   --bk-surface: #f3f4f6;        /* fills */
