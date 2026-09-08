@@ -2681,3 +2681,115 @@ template-local. The layout claims above rest on the CSS being unchanged and the 
 being placed on an existing element rather than around it, plus the full SQLite suite; a
 desktop and mobile pass on each of the three surfaces is still worth doing before release,
 which is what CLAUDE.md asks for after any calendar change.
+
+## F3 — `ADMIN_SPA=off`, so the platform's console can be the only admin UI
+
+A multi-tenant deployment whose own dashboard already carries every admin surface does not
+want a second, parallel one on each tenant host. `ADMIN_SPA=off` removes the embedded
+SvelteKit console: `GET /admin`, `GET /admin/` and every path under it, plus the bare-root
+redirect `GET /{$}` that leads there, answer 404. Nothing is deleted — not the SPA, not its
+embed, not the routes — and with the variable unset the binary behaves exactly as it did
+before it existed.
+
+### The registrations do not move, only the handlers
+
+`server.go` still calls `mux.Handle` three times with the same three patterns; what changes
+is which handler each one gets. Three reasons, and the first is the one that decided it:
+
+- `routes_classified_test.go` is a SOURCE scan of `server.go`, and a route that exists in
+  one configuration and not another is a route no gate can classify. The totals are
+  unchanged and asserted: 184 routes, 30 host / 108 credential / 38 platform / 8
+  allowlisted.
+- A 404 from a handler goes out through the whole middleware chain — request id, logging,
+  `SameOriginCheck`, the security headers. A mux with nothing registered on the pattern
+  would answer its own 404 outside all of it, so the switch would quietly change what a
+  404 on this instance looks like.
+- `/favicon.ico` is registered separately from the same embedded source, and the `/v1` tree
+  is registered elsewhere entirely. Both keep their handlers; the console is removed, not
+  the instance's public surface. The test asserts `/favicon.ico` still answers 200 and
+  `/v1/event-types` still answers 401 rather than 404.
+
+### Single-tenant ignores it, and the rule lives in exactly one expression
+
+A self-hoster has no other admin UI, so `ADMIN_SPA=off` on a single-tenant instance would
+lock the operator out of their own installation. `config.AdminSPAEnabled()` is
+`!MultiTenant || AdminSPA`, and it is what both the route registration and the SSO hand-off
+consult; `cfg.AdminSPA` keeps the value the environment asked for so boot can WARN that it
+did nothing rather than pretend it was never set. Two callers each remembering the rule is
+how the two halves would come to disagree, and the disagreement that matters is the one
+that locks somebody out.
+
+⚠️ `TestAdminSPA_offIsIgnoredInSingleTenantMode` was verified to fail when the registration
+reads `!cfg.AdminSPA` instead, which is the shape this is guarding against.
+
+### `on`/`off`, and why `true` is refused
+
+The value is a switch, so it is spelled like one. ⛔ The brief said "parse like the other
+booleans", and the other booleans go through `strconv.ParseBool`, which accepts
+`true/false/1/0/t/f` and **not** `on`/`off` — the two halves of that instruction cannot both
+be honoured. The explicit contract won: `on` and `off` (case-insensitive, trimmed) are the
+only accepted values and everything else, `true` and `false` included, is refused by
+`Validate` at boot.
+
+That refusal is load-bearing rather than pedantic. `Load` has no error return and the
+fallback for this one is **on**, so a value nobody can read exactly would serve the console
+the operator wrote the variable to remove, with nothing anywhere saying why. It is the same
+family as `FRAME_ANCESTORS` and `PLATFORM_RETURN_ORIGINS` — a malformed value that fails
+OPEN — which is why `Config` keeps the raw string: without it `Validate` has nothing left to
+object to. The check runs before the `!MultiTenant` early return, because a typo is a typo
+in either mode.
+
+### SSO: refuse before the session, not after
+
+`ssoDefaultNext` is `/admin/`. With the console off, a hand-off carrying no `?next=` would
+mint a session, spend the token's `jti` and redirect the person into a 404 on a host whose
+console lives somewhere else — and because the token is single-use, they could not retry.
+So the handler answers 404 **before** the nonce is claimed, in the same position as the
+existing `?next=` validation and for the same stated reason. The test asserts the negative
+directly: no `calnode_session` cookie, `sessions` empty, and `sso_nonces` empty, so the same
+token would still work with an explicit destination.
+
+An explicit `next` is untouched, including one naming `/admin/`. The platform's calendar
+connect round trip (F2) is exactly that case, and this endpoint is not the place to
+second-guess a path that has already been origin-checked.
+
+⛔ **The handler's flag is stored NEGATED (`adminSPAOff`), and that is the whole of its
+safety.** The zero value has to mean "the console is served", because every handler built
+without `SetAdminSPA` — every other test in the package, and any future entry point that
+forgets the call — must keep behaving as it always did. Stored in the positive sense, one
+forgotten setter would 404 the hand-off on an ordinary single-tenant instance, and the
+symptom would appear nowhere near the omission. `TestSSOHandoff_defaultsToServingTheConsole`
+pins it.
+
+### Tests
+
+Nine new cases across three packages, each verified to fail with its own fix reverted:
+
+- `internal/server/adminspa_test.go` — `TestAdminSPA_defaultConfigServesTheConsole` (the
+  three routes as they are today: 301, SPA bytes, 302),
+  `TestAdminSPA_offInMultiTenantModeIs404` (all three plus two sub-paths, with
+  `/favicon.ico` and `/v1/event-types` proving the blast radius),
+  `TestAdminSPA_offIsIgnoredInSingleTenantMode`. They drive the REAL mux rather than
+  `frontend.Handler()` directly, which is what `frameancestors_test.go` does — a test on the
+  handler alone cannot tell a 404 that came through the middleware chain from a pattern the
+  mux never had.
+- `internal/config/tenancy_test.go` — `TestLoad_adminSPADefaultsOn`,
+  `TestLoad_adminSPAOffAndOn`, `TestValidate_rejectsAnUnreadableAdminSPA`,
+  `TestAdminSPAEnabled`.
+- `internal/handler/sso_test.go` — `TestSSOHandoff_withoutAdminSPAAHandoffWithNoNextIs404`,
+  `TestSSOHandoff_withoutAdminSPAAnExplicitNextIsUnchanged`,
+  `TestSSOHandoff_defaultsToServingTheConsole`.
+
+⚠️ **A `config.Config` literal skips `Load`, so its zero value is `ADMIN_SPA=off`** — which
+on a multi-tenant literal now means a 404 where the fixture meant an ordinary instance. The
+two multi-tenant literals in this package (`newTenancyFixture`, the RSS proof) restate
+`AdminSPA: true` so the Postgres lane keeps exercising the shipped default. Nothing in
+either suite asserts on `/admin`, so this changed no result; it is there so the next
+addition to those fixtures is not debugging a 404 it never asked for.
+
+### Not done
+
+`docs/MULTI_TENANT.md` gained the row and a section; `DEPLOY.md` did not, following
+`PLATFORM_RETURN_ORIGINS`, which is likewise multi-tenant-only and documented in one place.
+No browser verification: the switch is a status code and every surface it touches is
+asserted through the real mux.

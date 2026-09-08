@@ -356,3 +356,82 @@ func TestSSOHandoff_archivedUserCannotSignIn(t *testing.T) {
 		t.Errorf("error = %q; want the archive to be named", got)
 	}
 }
+
+// ⛔ ssoDefaultNext is /admin/, which 404s on an instance running with ADMIN_SPA=off.
+// The refusal has to come BEFORE the session, or the hand-off "succeeds" into a dead
+// end: cookie set, jti spent, and a 404 on a host whose console lives elsewhere. The
+// caller cannot retry, because the token is single-use.
+func TestSSOHandoff_withoutAdminSPAAHandoffWithNoNextIs404(t *testing.T) {
+	h, database := newSSOHandler(t)
+	h.SetAdminSPA(false)
+
+	rec := doSSO(h, "/v1/auth/sso?token="+ssoToken(t, ssoSecret, ssoClaimSet()))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d; want 404 — %s", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "" {
+		t.Errorf("Location = %q; want no redirect into a route that does not exist", loc)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "calnode_session" {
+			t.Fatal("a session cookie was minted for a hand-off that could not land")
+		}
+	}
+
+	// Nothing was written: no session row, and the jti is unspent, so the same token
+	// could still be presented with an explicit next.
+	var sessions, nonces int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&sessions); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if err := database.QueryRow(`SELECT COUNT(*) FROM sso_nonces`).Scan(&nonces); err != nil {
+		t.Fatalf("count nonces: %v", err)
+	}
+	if sessions != 0 {
+		t.Errorf("sessions = %d; want 0 — the refusal must precede the session", sessions)
+	}
+	if nonces != 0 {
+		t.Errorf("nonces = %d; a refused hand-off must not burn the token", nonces)
+	}
+}
+
+// The other half, and the one the platform actually uses: the calendar connect round
+// trip hands off with an explicit next. Nothing about it changes when the console is
+// off, including a next that names /admin/ — the caller said where to land, and this
+// endpoint is not the place to second-guess an origin-checked path.
+func TestSSOHandoff_withoutAdminSPAAnExplicitNextIsUnchanged(t *testing.T) {
+	for _, next := range []string{"/v1/calendar/connect?provider=google", "/admin/bookings"} {
+		t.Run(next, func(t *testing.T) {
+			h, _ := newSSOHandler(t)
+			h.SetAdminSPA(false)
+
+			rec := doSSO(h, "/v1/auth/sso?token="+ssoToken(t, ssoSecret, ssoClaimSet())+
+				"&next="+url.QueryEscape(next))
+
+			if rec.Code != http.StatusFound {
+				t.Fatalf("status = %d; want 302 — %s", rec.Code, rec.Body.String())
+			}
+			if loc := rec.Header().Get("Location"); loc != next {
+				t.Errorf("Location = %q; want %q", loc, next)
+			}
+		})
+	}
+}
+
+// ⚠️ The flag is stored negated so that the zero value serves the console: a handler
+// nobody called SetAdminSPA on — every other test in this package, and any entry point
+// that forgets the call — must behave as it always did. Stored the other way round,
+// one forgotten call would 404 the hand-off on an ordinary single-tenant instance.
+func TestSSOHandoff_defaultsToServingTheConsole(t *testing.T) {
+	h, _ := newSSOHandler(t) // SetAdminSPA never called
+
+	rec := doSSO(h, "/v1/auth/sso?token="+ssoToken(t, ssoSecret, ssoClaimSet()))
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d; want 302 — %s", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "/admin/" {
+		t.Errorf("Location = %q; want /admin/", loc)
+	}
+}

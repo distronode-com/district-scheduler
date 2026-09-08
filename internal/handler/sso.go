@@ -37,6 +37,15 @@ func (h *Handler) SetSSOSecret(secret string) {
 	h.ssoSecret = secret
 }
 
+// SetAdminSPA records whether the embedded admin console is served, so the hand-off
+// below knows whether its default destination exists. Pass config.AdminSPAEnabled(),
+// not config.AdminSPA: the single-tenant rule belongs in one place. Set once at boot
+// from config, like SetSSOSecret, so there is no lock here.
+//
+// The argument is the positive sense and the field is the negative one, because the
+// default has to be "served" for a handler nobody called this on (see adminSPAOff).
+func (h *Handler) SetAdminSPA(on bool) { h.adminSPAOff = !on }
+
 // ssoClaims is the token payload. Every field except wid is required.
 type ssoClaims struct {
 	Iss  string `json:"iss"`  // issuing system, any non-empty string; logged, never authorised on
@@ -163,9 +172,27 @@ func (h *Handler) SSOHandoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ⛔ With the admin console switched off (ADMIN_SPA=off), ssoDefaultNext names a route
+	// that now 404s. Refusing here rather than redirecting into it is the difference
+	// between a hand-off that failed and a hand-off that succeeded into a dead end: the
+	// session cookie would already be set, the jti already spent, and the person would be
+	// looking at a 404 on a host whose console is somewhere else entirely. So this runs
+	// before the nonce is claimed and before any session exists, for the same reason the
+	// ?next= validation below does.
+	//
+	// An EXPLICIT next is untouched, including one naming /admin/: the caller said where
+	// to land, and the platform's own calendar-connect round trip is exactly that case.
+	rawNext := r.URL.Query().Get("next")
+	if rawNext == "" && h.adminSPAOff {
+		h.logger.WarnContext(r.Context(), "sso: no next and no admin console on this instance", "iss", claims.Iss)
+		h.writeError(w, http.StatusNotFound,
+			"this instance does not serve the admin console; the hand-off needs an explicit next")
+		return
+	}
+
 	// Validated before the nonce is claimed: a bad ?next= is the caller's own bug, and
 	// burning the token over it would make the retry fail for a second, unrelated reason.
-	next, err := ssoNextPath(r.URL.Query().Get("next"))
+	next, err := ssoNextPath(rawNext)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return

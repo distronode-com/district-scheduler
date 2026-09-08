@@ -141,3 +141,91 @@ func TestValidate_postgresqlSchemeAccepted(t *testing.T) {
 		t.Errorf("Validate() = %v; postgresql:// is the same engine as postgres://", err)
 	}
 }
+
+// ADMIN_SPA switches the embedded admin console off for a multi-tenant fleet whose
+// tenants are administered from the platform's own dashboard.
+
+func TestLoad_adminSPADefaultsOn(t *testing.T) {
+	os.Unsetenv("ADMIN_SPA")
+
+	cfg := config.Load()
+
+	if !cfg.AdminSPA {
+		t.Error("AdminSPA = false with ADMIN_SPA unset; the console must default to on")
+	}
+	if !cfg.AdminSPAEnabled() {
+		t.Error("AdminSPAEnabled() = false with ADMIN_SPA unset")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with ADMIN_SPA unset: %v", err)
+	}
+}
+
+func TestLoad_adminSPAOffAndOn(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"off", false},
+		{"OFF", false},
+		{" off ", false}, // trimmed: an operator's stray space is not a typo
+		{"on", true},
+		{"ON", true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("ADMIN_SPA", tc.value)
+			cfg := config.Load()
+			if cfg.AdminSPA != tc.want {
+				t.Errorf("AdminSPA = %v for ADMIN_SPA=%q; want %v", cfg.AdminSPA, tc.value, tc.want)
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("Validate() for ADMIN_SPA=%q: %v", tc.value, err)
+			}
+		})
+	}
+}
+
+// ⛔ Anything that is neither on nor off refuses the boot. The fallback is "on", so a
+// value nobody can read exactly would otherwise serve the console the operator wrote
+// the variable to remove, with nothing anywhere saying why. `true` and `false` are
+// refused for the same reason: one setting, one spelling.
+func TestValidate_rejectsAnUnreadableAdminSPA(t *testing.T) {
+	for _, value := range []string{"maybe", "true", "false", "1", "0", "no", "disabled"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("ADMIN_SPA", value)
+			cfg := config.Load()
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("Validate() = nil for ADMIN_SPA=%q; want a refusal", value)
+			}
+			if !strings.Contains(err.Error(), "ADMIN_SPA") {
+				t.Errorf("Validate() = %v; the message must name the variable", err)
+			}
+		})
+	}
+}
+
+// ⛔ The single-tenant rule: a self-hoster has no other admin UI, so ADMIN_SPA=off is
+// recorded and not acted on. AdminSPAEnabled is where that lives, and it is the only
+// expression the route registration and the SSO hand-off consult — quoting
+// cfg.AdminSPA directly is how the two halves would come to disagree.
+func TestAdminSPAEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		multiTenant bool
+		adminSPA    bool
+		want        bool
+	}{
+		{"single-tenant, on", false, true, true},
+		{"single-tenant, off is ignored", false, false, true},
+		{"multi-tenant, on", true, true, true},
+		{"multi-tenant, off", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{MultiTenant: tc.multiTenant, AdminSPA: tc.adminSPA}
+			if got := cfg.AdminSPAEnabled(); got != tc.want {
+				t.Errorf("AdminSPAEnabled() = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}

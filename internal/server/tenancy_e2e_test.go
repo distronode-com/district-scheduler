@@ -55,10 +55,14 @@ func newTenancyFixture(t *testing.T) *tenancyFixture {
 	app, platform := dbtest.RequireTenantPair(t)
 
 	cfg := &config.Config{
-		MultiTenant:         true,
-		BaseURL:             "https://app.calnode.example",
-		PublicBaseURL:       "https://app.calnode.example",
-		DatabaseURL:         "postgres://app", // not dialled; New takes the handle
+		MultiTenant:   true,
+		BaseURL:       "https://app.calnode.example",
+		PublicBaseURL: "https://app.calnode.example",
+		DatabaseURL:   "postgres://app", // not dialled; New takes the handle
+		// ⚠️ Load's default, restated: a Config literal skips Load, and the zero value
+		// of this one is ADMIN_SPA=off — which on a multi-tenant instance 404s /admin.
+		// The fixture models an ordinary deployment, so it says so.
+		AdminSPA:            true,
 		EmbedAllowedOrigins: nil,
 	}
 	// ⚠️ The worker's context has to be cancelled BEFORE drain: drain blocks until

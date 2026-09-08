@@ -40,6 +40,7 @@ func TestRSS_200Workspaces(t *testing.T) {
 	app, platform := dbtest.RequireTenantPair(t)
 	cfg := &config.Config{
 		MultiTenant:   true,
+		AdminSPA:      true, // Load's default; a literal skips Load (see newTenancyFixture)
 		BaseURL:       "https://app.calnode.example",
 		PublicBaseURL: "https://app.calnode.example",
 		PlatformToken: "rss-proof-token",

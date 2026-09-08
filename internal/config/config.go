@@ -30,6 +30,29 @@ type Config struct {
 	// "default", row-level security never enabled, SQLite still supported.
 	MultiTenant bool
 
+	// AdminSPA serves the embedded admin console at /admin/ (and the bare-root
+	// redirect into it). ADMIN_SPA=off turns those three routes into 404s so a
+	// multi-tenant deployment whose own console already has every admin surface
+	// does not ship a second, parallel one on every tenant host.
+	//
+	// Default on, and honoured ONLY when MultiTenant: a self-hoster has no other
+	// admin UI, so on a single-tenant instance ADMIN_SPA=off is ignored and said so
+	// at boot rather than locking the operator out of their own installation. Read
+	// through AdminSPAEnabled, never on its own — that method is where the
+	// single-tenant rule lives.
+	//
+	// Nothing else changes: the routes stay registered, /favicon.ico keeps its
+	// handler, and the whole /v1 tree is untouched. With the variable unset the
+	// binary behaves exactly as it did before it existed.
+	AdminSPA bool
+
+	// adminSPARaw is ADMIN_SPA as the environment gave it, kept so Validate can
+	// refuse a value Load had to fall back on. Load has no error return, and the
+	// fallback for this one is "on" — so without the raw value an operator who
+	// wrote ADMIN_SPA=false would be served the console they asked to remove, with
+	// nothing anywhere saying why.
+	adminSPARaw string
+
 	// DatabaseAdminURL is the PLATFORM role's DSN: the owner of the schema, with
 	// BYPASSRLS, which runs migrations, the worker's cross-tenant claim loop, the
 	// reconciler's workspace enumeration and the platform API. DatabaseURL is then
@@ -222,6 +245,11 @@ func Load() *Config {
 	cfg.DBMaxOpenConns, cfg.DBMaxIdleConns = PoolFromEnv()
 
 	cfg.MultiTenant = getBool("MULTI_TENANT", false)
+	// on/off rather than true/false because it reads as a switch on a UI, and because
+	// the two spellings must not both be accepted for one setting. Anything else is
+	// refused by Validate rather than silently taken as "on" here.
+	cfg.adminSPARaw = strings.TrimSpace(os.Getenv("ADMIN_SPA"))
+	cfg.AdminSPA = !strings.EqualFold(cfg.adminSPARaw, "off")
 	cfg.DatabaseAdminURL = os.Getenv("DATABASE_ADMIN_URL")
 	cfg.PlatformToken = os.Getenv("CALNODE_PLATFORM_TOKEN")
 
@@ -258,6 +286,16 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Checked in both modes, and before the single-tenant return below: a typo is a
+	// typo either way, and this is the family's third member — a value nobody can
+	// read exactly falls back to serving the admin console an operator asked to
+	// remove, which is the opposite of what they wrote.
+	switch {
+	case c.adminSPARaw == "", strings.EqualFold(c.adminSPARaw, "on"), strings.EqualFold(c.adminSPARaw, "off"):
+	default:
+		return fmt.Errorf("ADMIN_SPA: %q is not a valid value; use on or off", c.adminSPARaw)
+	}
+
 	if !c.MultiTenant {
 		return nil
 	}
@@ -292,6 +330,17 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+// AdminSPAEnabled reports whether the embedded admin console is served.
+//
+// The single-tenant rule lives here rather than in Load so that every caller gets the
+// same answer from the same expression: the route registration, the SSO hand-off and
+// the boot log would otherwise each have to remember `!MultiTenant || AdminSPA`, and
+// the one that forgot would be a lockout or a 404 nobody could explain.
+//
+// AdminSPA itself keeps the value the environment asked for, so boot can say that a
+// single-tenant ADMIN_SPA=off was ignored rather than pretending it was never set.
+func (c *Config) AdminSPAEnabled() bool { return !c.MultiTenant || c.AdminSPA }
 
 // isPostgresURL mirrors the classification internal/db does on the same string.
 // Duplicated rather than imported because db imports config, and one three-line

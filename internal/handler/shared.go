@@ -132,4 +132,12 @@ type shared struct {
 	// credential resolution on; unset, every request runs on the default
 	// workspace and the handler behaves exactly as it did before.
 	multiTenant bool
+
+	// adminSPAOff records that /admin/ is not served on this instance, and it is
+	// stored NEGATED on purpose: the zero value has to mean "the console is there",
+	// which is what every handler built without SetAdminSPA — the tests, and any
+	// future entry point that forgets the setter — must keep believing. Stored the
+	// other way round, forgetting one call would 404 SSO hand-offs on a perfectly
+	// ordinary instance. See SetAdminSPA.
+	adminSPAOff bool
 }

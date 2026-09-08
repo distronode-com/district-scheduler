@@ -48,6 +48,33 @@ magic link), and every route says which of the two it uses.
 | `PUBLIC_BASE_URL` | **ignored**; each workspace's `public_host` replaces it |
 | `DATA_DIR` | where uploads (avatars, branding) are written; defaults to the relative `data`. A read-only image sets it to its mounted volume |
 | `PLATFORM_RETURN_ORIGINS` | comma-separated origins the calendar OAuth round trip may return the browser to. Unset ⇒ off, and a `return_to` is **refused**, not ignored |
+| `ADMIN_SPA` | `on` (default) or `off`. `off` stops serving the embedded admin console, so the platform's own dashboard is the only admin UI. Multi-tenant only |
+
+### `ADMIN_SPA`
+
+A platform whose own console already has every admin surface does not want a second,
+parallel one on each tenant host. `ADMIN_SPA=off` answers **404** on `GET /admin`,
+`GET /admin/` and every path under it, and on the bare-root redirect `GET /{$}` that
+leads there. Nothing else moves: `/favicon.ico`, the public booking pages, the embed
+widget, the LiveKit room and the whole `/v1` tree are untouched, and the routes stay
+**registered** — the 404 is served through the same middleware chain as every other
+response, so request ids, logging and the security headers are unchanged.
+
+Values are `on` and `off` only. `true`/`false` are refused at boot, along with anything
+else that is neither: the fallback is `on`, so a value nobody can read exactly would
+serve the console the operator wrote the variable to remove.
+
+⛔ **It is ignored on a single-tenant instance**, which has no other admin UI — a
+self-hoster would be locked out of their own installation. A stray `ADMIN_SPA=off`
+there is a startup warning saying it did nothing, not a refusal.
+
+⛔ **With the console off, an SSO hand-off needs an explicit `next`.** The default
+destination is `/admin/`, which now 404s, so a hand-off without one answers 404 **before
+minting the session** rather than seating a session and landing the person on a dead end
+— the token is single-use, so a redirect into a 404 could not even be retried. The
+calendar connect round trip (`?next=/v1/calendar/connect?provider=…&return_to=…`) is
+unaffected, and so is any other explicit `next`, including one naming `/admin/`: the
+caller said where to land.
 
 ### `PLATFORM_RETURN_ORIGINS`
 
@@ -322,6 +349,9 @@ is looked at.
   nor delete it.
 - `role` from the token applies only to a user it creates; an existing user's role is never
   rewritten by a sign-in.
+- With `ADMIN_SPA=off` the default landing route does not exist, so a hand-off carrying no
+  `next` is a 404 **before** the nonce is claimed and before the session is created. See
+  [`ADMIN_SPA`](#admin_spa).
 
 The login start carries the workspace in the state **cookie** (`<nonce>|<workspace_id>`) and sends
 only the nonce to the provider. The nonce is compared, the workspace is read: a visitor can rewrite

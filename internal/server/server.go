@@ -56,6 +56,15 @@ func BuildHandler(ctx context.Context, cfg *config.Config, db *db.DB, logger *sl
 	h.SetDataDir(dataDir)
 	h.SetEncKey(cfg.EncryptionKey)
 	h.SetSSOSecret(cfg.SSOSharedSecret)
+	// ADMIN_SPA is a multi-tenant switch: a single-tenant instance has no other admin
+	// UI, so an operator who set it there is told it did nothing rather than being left
+	// to wonder why /admin/ still answers. AdminSPAEnabled is the only expression that
+	// decides this, here and at the route registration in New.
+	if !cfg.AdminSPA && !cfg.MultiTenant {
+		logger.Warn("ADMIN_SPA=off ignored: it applies to multi-tenant instances only, " +
+			"and this one has no other admin UI")
+	}
+	h.SetAdminSPA(cfg.AdminSPAEnabled())
 	h.SetPlatformToken(cfg.PlatformToken)
 	h.SetPlatformReturnOrigins(cfg.PlatformReturnOrigins)
 	h.SetMetricsToken(cfg.MetricsToken)
@@ -681,15 +690,37 @@ func New(ctx context.Context, cfg *config.Config, db *db.DB, logger *slog.Logger
 	// the admin console, and the public pages' own DENY must not be reachable from a
 	// config flag.
 	adminSPA := FrameAncestors(cfg.FrameAncestors)(frontend.Handler())
-	mux.Handle("GET /admin", http.RedirectHandler("/admin/", http.StatusMovedPermanently))
-	mux.Handle("/admin/", http.StripPrefix("/admin", adminSPA))
-
+	adminIndex := http.Handler(http.RedirectHandler("/admin/", http.StatusMovedPermanently))
+	adminTree := http.Handler(http.StripPrefix("/admin", adminSPA))
 	// Bare root → admin. The `{$}` anchor matches ONLY the exact path "/", so it
 	// stays a no-op for every other unmatched path (those still 404). Public
 	// visitors always arrive via a full /book/{slug} link, so this only affects
 	// an operator landing on the domain root. 302 (not 301) so it isn't cached
 	// permanently if a marketing landing page is ever added here.
-	mux.Handle("GET /{$}", http.RedirectHandler("/admin/", http.StatusFound))
+	adminRoot := http.Handler(http.RedirectHandler("/admin/", http.StatusFound))
+
+	// ADMIN_SPA=off on a multi-tenant instance: the platform's own console is the
+	// admin UI, so these three answer 404 instead. The HANDLERS change and the
+	// registrations do not, deliberately —
+	//
+	//   - the classification gate reads this file, and a route that disappears in one
+	//     configuration is a route no gate can classify;
+	//   - the 404 goes out through the same middleware chain as every other response,
+	//     so the request id, the logging and the security headers are unchanged. A mux
+	//     with nothing registered here would answer its own 404 outside all of that;
+	//   - /favicon.ico and the whole /v1 tree are registered elsewhere and untouched.
+	//     The console is removed, not the instance's public surface.
+	//
+	// Single-tenant is never switched off (config.AdminSPAEnabled): the operator would
+	// have no admin UI at all.
+	if !cfg.AdminSPAEnabled() {
+		notFound := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
+		adminIndex, adminTree, adminRoot = notFound, notFound, notFound
+	}
+
+	mux.Handle("GET /admin", adminIndex)
+	mux.Handle("/admin/", adminTree)
+	mux.Handle("GET /{$}", adminRoot)
 
 	// Trusted-proxy resolution wraps everything, so the per-IP limiters and anything else
 	// asking for the client IP see one answer computed once. A bad CIDR is logged and
