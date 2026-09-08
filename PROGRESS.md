@@ -2979,3 +2979,177 @@ host-scoped, 108 credential-scoped, 38 platform, 8 allowlisted**.
 - No migration, no schema change, no frontend change, no `go.mod` change.
 - `DEPLOY.md` is unchanged, following `PLATFORM_RETURN_ORIGINS` and `ADMIN_SPA`: all of
   this is multi-tenant-only and documented in one place.
+
+---
+
+## F3a — vhost hardening, a neutral root, and metrics a collector can reach
+
+Four findings from the same platform-side review, three of them about what a browser is
+told and one about what a scraper is refused. None is gated on `MultiTenant` except the
+neutral root, which is reached only through a multi-tenant-only switch.
+
+### M9 (1) — the security headers existed only where a handler remembered them
+
+The finding is not that a page was missing a header. `book.html`, `manage.html` and the
+SPA each set a subset, and **everything else set none**: `/embed.js` and `/booking.css`,
+which third-party sites load, every JSON error on the `/v1` tree, and every 404. A
+per-handler header is a header that is absent from whatever nobody edited.
+
+`server.SecurityHeaders` sits at the mux root, inside `Logging` and outside
+`SameOriginCheck` — the only position that covers the mux's own 404s AND the CSRF check's
+403. Four headers: `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(),
+geolocation=()`, and `Strict-Transport-Security: max-age=31536000; includeSubDomains`.
+
+⚠️ **Set BEFORE calling through, which is what makes it set-if-absent.** A handler that
+`Set`s one of these keys overwrites it, so the LiveKit room keeps its own
+`Referrer-Policy: no-referrer`. The alternative — a wrapping `ResponseWriter` filling gaps
+at `WriteHeader` time — buys nothing and costs the `Flush` transparency the logging
+wrapper already had to restore by hand.
+
+⛔ **The room is the `Permissions-Policy` exception** (`camera=(self), microphone=(self),
+geolocation=()`, chosen by path prefix). It is a video meeting, and a Permissions-Policy
+denial is not recoverable from JavaScript — `getUserMedia` rejects and the page has no way
+to ask again.
+
+⛔ **HSTS is conditional and the condition is not cosmetic.** Only on a request that
+arrived over TLS: a real connection, or `X-Forwarded-Proto: https`. Browsers ignore HSTS
+on a plain-http response anyway, but this binary is also run by self-hosters on a LAN, and
+an accidental `includeSubDomains` pinned against a hostname reachable only over http locks
+that operator out of their own installation for a year with nothing to retract it with.
+
+⚠️ **The forwarded header is believed WITHOUT consulting `TRUSTED_PROXY_CIDRS`**, unlike
+the rate limiter's client IP, and the asymmetry is deliberate: forging it buys an HSTS
+header browsers honour only over https, i.e. only where it was true anyway, while
+requiring the allowlist would leave HSTS off on every deployment that has not set one.
+
+### M9 (2) — `'self'` was missing from the strict `script-src`
+
+`strictPublicCSP` read `script-src 'unsafe-inline'`. A CSP source list is an allowlist and
+`'unsafe-inline'` permits inline code and nothing else, so **every same-origin `<script
+src>` on a booking page was refused**. Behind Cloudflare that is the console error on every
+booking page: the edge injects `/cdn-cgi/challenge-platform/scripts/jsd/main.js` as a
+same-origin script, it was blocked, and the bot signal it feeds was silently absent. The
+relaxed `publicCSP` has always carried `'self'`, so this also removes an asymmetry where
+turning a tracking tag ON made the policy accept MORE of our own origin than the strict
+default did.
+
+⛔ **The suite could not have caught it.** Every test compared `publicCSP(...)` to
+`strictPublicCSP`, so both sides moved together and nothing said what the policy actually
+was. It is now pinned as a literal, plus a second assertion in the terms of the bug (both
+policies must allow same-origin script), because a literal alone would still pass if
+someone "tidied" the pair and updated the literal to match.
+
+### M9 (3) — the neutral root
+
+With `ADMIN_SPA=off`, `GET /{$}` was a bare 404 on a tenant's own public host. It now
+lists the workspace's public, active event types as links to `/book/<slug>`, on
+`booking.css` and the workspace's branding, translated, `noindex`, under the strict CSP.
+
+⛔ **No route was added or removed**: the registration in `server.New` is the same line
+with a different handler behind it, and `routes_classified_test.go` still reads **184
+routes — 30 host-scoped, 108 credential-scoped, 38 platform, 8 allowlisted**. The
+allowlist entry for `GET /{$}` gained the second handler in its reason string.
+
+⚠️ **What it deliberately is not** is a marketing page or a workspace profile: no host
+names, no descriptions, no counts. It publishes nothing the booking pages do not already
+publish to the same audience, and `noindex` keeps the list from becoming a directory of an
+operator's tenants assembled by a search engine (the booking pages it links to stay
+indexable, which is what a workspace hands out a link for).
+
+A workspace with nothing public renders the same page with one sentence. An empty
+workspace is not a missing one, and the unknown-host 404 — still raised by `Scoped`, before
+the handler runs — already carries that other answer.
+
+⛔ **It reads through the workspace-bound handle with no workspace predicate in the SQL**,
+which is D1, and it is the one public surface where getting that wrong shows up as someone
+else's data ON the page rather than as a 404: every other host-scoped page names its
+subject in the URL, so an unbound read there returns the wrong single row. Proven rather
+than asserted — with the query swapped to `Platform()`,
+`TestTenancy_theIndexListsOnlyItsOwnWorkspace` lists both tenants.
+
+**The Distronode token block moved into a `districtTheme` partial** rather than being
+copied a third time. It was byte-identical in `book.html` and `manage.html`; three copies
+of a token table is how one surface drifts a shade, and the contrast reasoning on
+`--bk-subtle` is worth having in one place. It stays a page partial and not a
+`booking.css` rule for the reason `page_theme_test.go` asserts in both directions: the
+embed widget loads that sheet on customers' sites and must not inherit our brand.
+
+The page adds body chrome, a link reset so `.slot-btn` works as an `<a>`, and its own list
+rule — `booking.css`'s `.slots-list` caps at 340px and scrolls, which is right inside a
+card column and wrong for the only content on a page. Everything with a look comes from
+the shared sheet. Checked in a real browser at **1280×900 and 390×844**: the card, the
+rows and the footer match the booking surfaces, and at the phone width the card goes
+full-bleed and the duration/location line stacks under the event name.
+
+### I6 — `METRICS_ALLOW_UNAUTHENTICATED_FROM`
+
+`GET /metrics` is bearer-gated and 404s without the token, which is right for a publicly
+reachable endpoint and wrong for the one caller that has to read it. **A Prometheus
+collector cannot hold this kind of secret**: Grafana Alloy's annotation autodiscovery sends
+ONE bearer token file to every target it scrapes, so pointing it at `METRICS_TOKEN` would
+present this instance's token to every other annotation-scraped pod on the cluster.
+Measured: the fleet's scrape 404'd about **5,755 times a day** and the fork published no
+metrics in any region.
+
+The opt-in is the network position. Empty by default; set to the collector's networks
+(the cluster's pod CIDR on a Kubernetes origin) and those requests are served with no
+bearer. Nothing else moves — the bearer still works, and outside those networks the answer
+is the 404 it always was.
+
+⛔ **Matched against the TCP PEER, never a forwarded header**, and not the
+trusted-proxy-resolved client IP the rate limiter uses. Here the address IS the credential,
+so it has to be the one value in a request a client cannot choose; reading a header would
+let anyone who can reach the endpoint claim to be the collector by asserting it. The
+limiter can afford the opposite trade because a forged value there costs a shared bucket.
+⚠️ The consequence to know before deploying it: the endpoint must not be reachable THROUGH
+a proxy inside the allowed range, or every request arrives wearing that proxy's address.
+
+### The locale strings, and the review they have not had
+
+Three keys — `index_title`, `index_intro`, `index_none` — added to **all nine** locale
+files. No printf verbs, so the format-parity guard is satisfied trivially; the same-keys
+guard is what makes the nine mandatory.
+
+⚠️ **The eight non-English translations are LLM drafts with no native review**, exactly as
+CLAUDE.md says of every other non-English string in this repo. Structure is verified,
+wording is not. Register was matched to each file's existing copy rather than invented —
+`de` keeps Sie, `es`/`sv`/`nl` stay informal, `pt` stays European (`marcação`, not
+`agendamento`) — but that is a draft's judgement about a draft. Say so before anyone
+markets a language, and treat `fr-CA`'s divergence from `fr` (`offerte à la réservation`)
+as the guess it is.
+
+### Tests
+
+- `internal/server/security_headers_test.go` —
+  `TestSecurityHeaders_onEverySurfaceInBothModes` (a public asset, a `/v1` JSON 401 and a
+  mux 404, in single- and multi-tenant; multi-tenant matters because its unknown-host 404
+  comes out of the resolver rather than a handler, which is exactly what a per-handler
+  header misses), `…HSTSFollowsTheRequestScheme` (six cases including a proxy chain in both
+  directions), `…HSTSOnADirectTLSConnection`, `…theRoomPageKeepsCameraAndMicrophone` (and
+  that the exception is scoped to the prefix), `…aHandlerKeepsItsOwnValue`. Verified by
+  unwiring the middleware: every case fails, and the two that do NOT are informative —
+  `nosniff` is already present on a `ServeMux` 404 and on the unknown-host HTML 404.
+- `internal/handler/tracking_csp_test.go` — `TestStrictPublicCSP_isTheStringWeThinkItIs`
+  (the literal) and `…allowsSameOriginScripts` (both policies).
+- `internal/server/tenant_index_test.go` — the list and its two exclusions asserted by
+  name AND slug, the ordering, the empty state, the unknown host still 404, the headers and
+  the `noindex`, `?lang=fr` (page strings translated, event-type name left verbatim), and
+  the console-ON redirect **in both modes** plus single-tenant-off.
+- `internal/server/tenancy_index_test.go` — the cross-tenant claim, on a real NOBYPASSRLS
+  role, both directions. LOUD SKIPs without `CALNODE_TEST_POSTGRES_DSN`.
+- `internal/handler/metrics_test.go` — inside the CIDR anonymously, outside it in six
+  combinations (including the bearer still working and an address one bit past the mask),
+  four proxy headers asserted **individually** so a refactor reaching for the resolved
+  client IP cannot pass by handling only `X-Forwarded-For`, and the empty setting from
+  three addresses.
+
+### Not done
+
+- No migration, no schema change, no `frontend/` change, no `go.mod` change.
+- No Caddy `header` block anywhere: everything M9 asked for is expressible in Go, which is
+  also the only place a self-hoster who does not run our Caddy gets it.
+- The k8s manifest that sets `METRICS_ALLOW_UNAUTHENTICATED_FROM` is the platform side's,
+  not this repo's. `docs/MULTI_TENANT.md` names the variable and the value it expects.
+- `DEPLOY.md` is unchanged, following `ADMIN_SPA` and `PLATFORM_RETURN_ORIGINS`: the root
+  page and the metrics opt-in are documented in one place.
