@@ -177,10 +177,14 @@ not the instance.
 | surface | multi-tenant answer |
 |---|---|
 | `GET`/`PATCH /v1/settings/{email,google,zoom,livekit,stripe}`, `POST /v1/settings/email/test` | **403** `{"error":"managed_by_platform"}` |
+| `POST /v1/settings/llm/test` | **403** `{"error":"managed_by_platform"}` |
 | `PATCH /v1/settings/llm` naming `endpoint`, `model` or `api_key` | **403** `{"error":"managed_by_platform"}`; `enabled` and `extra_instructions` are the tenant's and are unaffected |
 | `GET /v1/settings/llm` | answers without `endpoint`, `model` or `api_key_set`; `enabled`, `configured`, `active` and `extra_instructions` stay |
+| `PATCH /v1/settings/notetaker` naming `stt_api_key` | **403** `{"error":"managed_by_platform"}`; the `enabled` toggle is the tenant's and is unaffected |
+| `GET /v1/settings/notetaker` | answers without `stt_api_key_set` or `stt_base_url`; `enabled` stays |
 | `PATCH /v1/settings/tracking` with a non-empty `head_html` | **400** `{"error":"managed_by_platform"}`; the GA4/GTM id fields stay |
 | `POST /v1/webhooks` with an `http://` URL | **400**; https only |
+| `POST /v1/calendar/caldav/connect` with an `http://` `server_url` | **400**, naming the field and the accepted scheme |
 | `POST /v1/calendar/caldav/connect` to a private, loopback, link-local or metadata address | the ordinary "could not reach the CalDAV server", with no address in it |
 
 The reasoning, per row:
@@ -197,7 +201,20 @@ The reasoning, per row:
   the workspace's own summariser settings; `endpoint`, `model` and `api_key` name the model
   provider the platform pays for. An empty `api_key` is refused too: `""` is how the handler
   spells "keep the stored one", so a tenant that can send the field can clear the
-  instance's.
+  instance's. ⛔ **`POST /v1/settings/llm/test` is blanket-refused rather than split**, and
+  it is the sharpest route in the set: it dials whatever `endpoint` the body names, and an
+  empty `api_key` makes it read the STORED key and dial with it — a request to a
+  tenant-chosen host, carrying the platform's credential. With the PATCH's fields managed
+  there is nothing left here for a tenant to test.
+- **The notetaker splits the same way.** `stt_api_key` is written to the singleton
+  `server_settings` row, so a tenant-supplied speech-to-text credential is what every OTHER
+  tenancy on the deployment would then transcribe through; the `enabled` toggle beside it is
+  the workspace's own and is the only thing the console offers on that page, which is why
+  refusing the route was not an option. ⚠️ The GET drops `stt_base_url` as well as the key
+  flag, and the URL is the less obvious of the two: `sttBaseURL()` answers the workspace's
+  own value when it has one and the process value otherwise, and the response cannot say
+  which — so a workspace that never set one read the instance's vendor host back as if it
+  were its own.
 - **`head_html` is refused AND ignored.** It injects raw HTML into the `<head>` of the
   workspace's booking pages and relaxes that page's CSP to fit it — on the operator's
   domain, on a page that collects card details. A row that already holds one stops
@@ -207,7 +224,14 @@ The reasoning, per row:
   address and intake answers. A self-hoster posting to their own machine over plaintext is
   their own data on their own network; a tenant's URL sends the operator's customers'
   details off the operator's network.
-- **CalDAV resolves through the strict guard.** `server_url` is a bring-your-own-server
+- **CalDAV requires https, and resolves through the strict guard.** Two separate checks
+  answering two separate questions: whether the credential travels in clear, and which
+  addresses may be reached. CalDAV authenticates with HTTP Basic, so the app-specific
+  password is on the wire in every request — over `http://` to a permitted public host that
+  is a disclosure the address guard has no opinion about, so the connect form takes only
+  https here (single-tenant keeps `http`, where it is the operator's own password on their
+  own network). The scheme check runs BEFORE the dial; run after, it would be a nicer error
+  message on a password already sent. `server_url` is a bring-your-own-server
   field, so single-tenant keeps the narrow metadata-only block: a Nextcloud or Radicale on
   the operator's LAN is the intended configuration. Here the string is a tenant's and the
   private network it reaches is the operator's — the pod network, the node's exporters, the

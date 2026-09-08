@@ -2833,6 +2833,27 @@ least visible of the three writes through. `GET /v1/settings/llm` stops returnin
 three; `configured` and `active` stay, because "will the summariser run" is a question a
 tenant admin legitimately has.
 
+⛔ **Two more routes were found during review of this packet and are in the release, not
+deferred.**
+
+`POST /v1/settings/llm/test` is blanket-guarded, and it is the sharpest route in the set:
+it dials whatever `endpoint` the body names, and an empty `api_key` makes it read the
+STORED key and dial with it — a request to a tenant-chosen host carrying the platform's
+credential, with only the metadata-only guard in front of it rather than `ResolveSafe`.
+Blanket rather than split, because once the PATCH's credential fields are managed every
+value this route takes is the platform's.
+
+`PATCH /v1/settings/notetaker` splits like the LLM PATCH. `stt_api_key` is written to the
+singleton `server_settings` row, so a tenant-supplied speech-to-text credential is what
+every OTHER tenancy on the deployment would then transcribe through — one workspace paying
+for, and able to read the usage of, everyone else's call audio — while the `enabled` toggle
+beside it is the workspace's own and is the only thing the console offers on that page,
+which is why refusing the route was not an option. `GET` drops `stt_api_key_set` and
+`stt_base_url`. ⚠️ The URL is the less obvious of the two: `sttBaseURL()` answers the
+workspace's value when it has one and the process value otherwise, and the response cannot
+say which — so a workspace that never set one read the instance's vendor host back as if it
+were its own.
+
 ### H3 — the console off-switch, and the bypass it shipped with
 
 The `ADMIN_SPA=off` guard refused only a hand-off with NO `?next=`, on the reasoning that
@@ -2860,6 +2881,15 @@ network it reaches is the OPERATOR's (the k3s service range, node-exporter,
 postgres_exporter, Alloy, the website pod, the media plane), and `calendar.caldav.connect`
 is a viewer-level op — so `caldav.WithStrictSSRFGuard(cfg.MultiTenant)` routes every dial,
 and every redirect hop, through `netutil.ResolveSafe`.
+
+⛔ **And a second, separate check answering a different question: does the CREDENTIAL
+travel in clear?** CalDAV authenticates with HTTP Basic, so the app-specific password is on
+the wire in every request; over `http://` to a permitted PUBLIC host that is a disclosure
+the address guard has no opinion about. `ConnectCalDAV` therefore hands
+`validateBYOServerURL` only `https` in this mode — single-tenant keeps `http`, where it is
+the operator's own password on their own network — and it runs BEFORE the dial, because
+after it would be a nicer error message on a password already sent. Both presets are https,
+so the picker path is untouched.
 
 ⛔ **The error text is half the fix, not a detail.** `ConnectCalDAV` writes `err.Error()`
 straight into a 400 for the connect form, so a refusal naming the blocked address would
@@ -2915,10 +2945,18 @@ host-scoped, 108 credential-scoped, 38 platform, 8 allowlisted**.
   `TestInstanceCredentialRoutesAreGuardedByPlatformManaged` asserts in BOTH directions (a
   guarded path that loses its wrapper, and a tenant-safe path that gains one),
   `TestEverySettingsRouteHasATenancyDecision` fails on a `/v1/settings` route in neither
-  table, `TestNoPlatformManagedGuardOutsideItsTable` catches a stray guard.
-- `internal/handler/platform_managed_test.go` — the eleven guarded routes in both modes,
-  the tenant-safe four still answering 200 under `MultiTenant`, the LLM field split
-  (including `{"api_key":""}`), the body surviving the wrapper, and the GET redaction.
+  table (26 routes: 14 platform-managed, 12 tenant-safe),
+  `TestNoPlatformManagedGuardOutsideItsTable` catches a stray guard.
+- `internal/handler/platform_managed_settings_test.go` — the twelve blanket-guarded routes
+  in both modes, the tenant-safe four still answering 200 under `MultiTenant`, the LLM and
+  notetaker field splits (each including the empty-string case), the body surviving the
+  wrapper, and both GET redactions. ⚠️ Named `…_settings_test.go` because
+  `platform_managed_test.go` already exists and is the F1 managed-ROWS suite; the two are
+  about different things that share a word.
+- `internal/handler/caldav_connect_tenancy_test.go` — the connect form's scheme in both
+  modes, https accepted in both, and the ordering case that proves the scheme check runs
+  before the dial (it uses an address the dial-time guard would also refuse and asserts the
+  SCHEME complaint comes back).
 - `internal/handler/google_settings_tenancy_internal_test.go` — the hot reload, asserted by
   calling the handler DIRECTLY past the wrapper, which is what a refactor that dropped it
   would produce. Internal because `calBase`/`googleAuth` are unexported on purpose.
@@ -2938,12 +2976,6 @@ host-scoped, 108 credential-scoped, 38 platform, 8 allowlisted**.
 
 ### Not done
 
-- **`POST /v1/settings/llm/test` is NOT guarded.** It takes `endpoint`, `model` and
-  `api_key` in its own body and dials them, falling back to the STORED key when `api_key`
-  is empty — so a tenant can still ask the instance to make one request to a host they
-  chose, and to do it holding the platform's key. It is outside this packet's scope and is
-  listed in `routes_platform_managed_test.go` as tenant-safe with that caveat attached, so
-  the decision is recorded rather than implied.
 - No migration, no schema change, no frontend change, no `go.mod` change.
 - `DEPLOY.md` is unchanged, following `PLATFORM_RETURN_ORIGINS` and `ADMIN_SPA`: all of
   this is multi-tenant-only and documented in one place.
