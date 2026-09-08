@@ -25,8 +25,9 @@ import (
 // mode only — the mode nobody runs locally.
 
 // platformManagedGuards maps a route pattern to the guard expression its registration
-// must contain. Two guards exist: the blanket one, and the field-scoped one for the LLM
-// PATCH, whose body carries the tenant's two fields alongside the platform's three.
+// must contain. Two guards exist: the blanket one, and the field-scoped one for the two
+// PATCHes whose body carries the tenant's own fields alongside the platform's credential
+// ones (`/settings/llm` and `/settings/notetaker`).
 var platformManagedGuards = map[string]string{
 	"GET /v1/settings/email":       "h.PlatformManaged(",
 	"PATCH /v1/settings/email":     "h.PlatformManaged(",
@@ -39,7 +40,9 @@ var platformManagedGuards = map[string]string{
 	"PATCH /v1/settings/livekit":   "h.PlatformManaged(",
 	"GET /v1/settings/stripe":      "h.PlatformManaged(",
 	"PATCH /v1/settings/stripe":    "h.PlatformManaged(",
+	"POST /v1/settings/llm/test":   "h.PlatformManaged(",
 	"PATCH /v1/settings/llm":       `h.PlatformManagedFields("endpoint", "model", "api_key")`,
+	"PATCH /v1/settings/notetaker": `h.PlatformManagedFields("stt_api_key")`,
 }
 
 // tenantSafeSettingsRoutes are the /v1/settings paths a tenant legitimately owns. Named
@@ -48,8 +51,7 @@ var platformManagedGuards = map[string]string{
 var tenantSafeSettingsRoutes = map[string]string{
 	"GET /v1/settings/storage":            "a per-workspace recording-retention toggle",
 	"PATCH /v1/settings/storage":          "a per-workspace recording-retention toggle",
-	"GET /v1/settings/notetaker":          "a per-workspace on/off switch",
-	"PATCH /v1/settings/notetaker":        "a per-workspace on/off switch",
+	"GET /v1/settings/notetaker":          "reads only; stt_api_key_set and stt_base_url are omitted in the handler",
 	"GET /v1/settings/tracking":           "the workspace's own GA4/GTM ids (head_html is refused separately, L6)",
 	"PATCH /v1/settings/tracking":         "the workspace's own GA4/GTM ids (head_html is refused separately, L6)",
 	"GET /v1/settings/branding":           "the workspace's own logo, colours and links",
@@ -59,7 +61,6 @@ var tenantSafeSettingsRoutes = map[string]string{
 	"POST /v1/settings/branding/banner":   "the workspace's own banner",
 	"DELETE /v1/settings/branding/banner": "the workspace's own banner",
 	"GET /v1/settings/llm":                "reads only; the provider fields are omitted in the handler (H1)",
-	"POST /v1/settings/llm/test":          "carries the credential in its own body; see PROGRESS.md, F6 'Not done'",
 }
 
 func TestInstanceCredentialRoutesAreGuardedByPlatformManaged(t *testing.T) {

@@ -526,7 +526,12 @@ func New(ctx context.Context, cfg *config.Config, db *db.DB, logger *slog.Logger
 	mux.HandleFunc("GET /v1/settings/storage", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetStorageSettings)))
 	mux.HandleFunc("PATCH /v1/settings/storage", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchStorageSettings))))
 	mux.HandleFunc("GET /v1/settings/notetaker", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetNotetakerSettings)))
-	mux.HandleFunc("PATCH /v1/settings/notetaker", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchNotetakerSettings))))
+	// ⛔ `stt_api_key` is the ONE credential field this PATCH accepts, and it is stored on
+	// the INSTANCE's server_settings row — so a tenant-supplied speech-to-text credential
+	// would be what every other tenancy on this deployment transcribes through. The
+	// `enabled` toggle beside it is genuinely the workspace's, which is why the guard is
+	// by field: refusing the whole route would take the notetaker switch off the console.
+	mux.HandleFunc("PATCH /v1/settings/notetaker", settingsRL(h.PlatformManagedFields("stt_api_key")(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchNotetakerSettings)))))
 	mux.HandleFunc("GET /v1/bookings/{id}/notes", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetBookingNotes)))
 	mux.HandleFunc("POST /v1/bookings/{id}/notes/regenerate", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).RegenerateBookingNotes)))
 	mux.HandleFunc("GET /v1/bookings/{id}/transcript", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetBookingTranscript)))
@@ -540,7 +545,12 @@ func New(ctx context.Context, cfg *config.Config, db *db.DB, logger *slog.Logger
 	// `model` and `api_key` name the model provider the PLATFORM pays for. A body naming
 	// any of the three is 403 `managed_by_platform`; a body naming neither is unchanged.
 	mux.HandleFunc("PATCH /v1/settings/llm", settingsRL(h.PlatformManagedFields("endpoint", "model", "api_key")(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchLLMSettings)))))
-	mux.HandleFunc("POST /v1/settings/llm/test", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).TestLLMSettings))))
+	// ⛔ Blanket, not by field, and the reason is the FALLBACK. TestLLMSettings dials
+	// whatever `endpoint` the body names, and when `api_key` is empty it reads the
+	// STORED key and dials with it — so a tenant could make the instance issue a request
+	// to a host they chose while holding the platform's credential. Once the credential
+	// fields on the PATCH are managed, a tenant has nothing left to test here.
+	mux.HandleFunc("POST /v1/settings/llm/test", settingsRL(h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).TestLLMSettings)))))
 	mux.HandleFunc("GET /v1/settings/branding", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetBranding)))
 	mux.HandleFunc("PATCH /v1/settings/branding", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchBranding))))
 	mux.HandleFunc("POST /v1/settings/branding/logo", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).UploadBrandingLogo))))

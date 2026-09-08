@@ -27,18 +27,35 @@ func (h *Handler) GetNotetakerSettings(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	h.writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":         enabled != 0,
-		"stt_api_key_set": keyEnc != "",
-		// Read-only, and env-only (STT_BASE_URL): it names where recording audio is sent,
-		// which an admin should be able to read without shelling into the container, and
-		// should not be able to repoint from a browser session.
-		"stt_base_url": h.sttBaseURL(),
-	})
+	body := map[string]any{"enabled": enabled != 0}
+	// ⛔ Both remaining fields describe the INSTANCE's speech-to-text provider, so a
+	// multi-tenant instance answers with neither.
+	//
+	// `stt_api_key_set` is a credential's existence flag: a tenant may turn the notetaker
+	// on and may not learn what powers it. `stt_base_url` is the endpoint behind that
+	// credential, and it is worse than it looks — h.sttBaseURL() returns the workspace's
+	// own value when it HAS one and the process value otherwise, and the response cannot
+	// say which it is showing, so a workspace that never set one reads the instance's
+	// host back as if it were its own.
+	//
+	// Single-tenant returns both, unchanged: read-only, and env-only (STT_BASE_URL), so
+	// the operator can see where recording audio is sent without shelling into the
+	// container and cannot repoint it from a browser session.
+	if !h.multiTenant {
+		body["stt_api_key_set"] = keyEnc != ""
+		body["stt_base_url"] = h.sttBaseURL()
+	}
+	h.writeJSON(w, http.StatusOK, body)
 }
 
 // PatchNotetakerSettings handles PATCH /v1/settings/notetaker (admin). An empty stt_api_key keeps
 // the stored one (use the toggle to turn the feature off).
+//
+// ⛔ `stt_api_key` is refused to a tenant credential in multi-tenant mode, by
+// h.PlatformManagedFields at the registration: it writes to the INSTANCE's settings row,
+// so a tenant-supplied key is what every other tenancy on this deployment would then
+// transcribe through. The `enabled` toggle is the workspace's own and is unaffected,
+// which is why the guard is by field rather than by route.
 func (h *Handler) PatchNotetakerSettings(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireAdmin(w, r); !ok {
 		return
