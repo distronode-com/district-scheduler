@@ -5,19 +5,107 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/calnode/calnode/internal/caldav"
 	"github.com/calnode/calnode/internal/calendar"
 )
 
-// stateSep separates the provider name from the userID inside the (encrypted)
-// OAuth state, so the shared callback can route to the right provider.
+// stateSep separates the fields inside the (encrypted) OAuth state, so the shared
+// callback can route to the right provider and, optionally, back to the platform console
+// that started the round trip.
 const stateSep = "\x1f"
+
+// errReturnToNotAllowed is the one answer every rejected ?return_to= gets. It is
+// deliberately a single message: an operator debugging a misconfiguration has the
+// allowlist in front of them, and a caller who is probing learns nothing from a more
+// specific one.
+var errReturnToNotAllowed = errors.New("return_to origin not allowed")
+
+// returnToFromRequest validates the optional ?return_to= on the connect URL and returns
+// the value to carry in the state ("" when absent).
+//
+// Two rules, and the second is the one that is easy to get wrong:
+//
+//   - The origin must be in PLATFORM_RETURN_ORIGINS, compared WHOLE. A prefix match would
+//     accept https://console.example.com.evil.test, and this list is the only thing
+//     between the OAuth callback and an open redirect.
+//   - With the list empty the feature is off and a return_to is REFUSED, not ignored. A
+//     platform pointed at an instance nobody configured for it then finds out on the first
+//     attempt, rather than on a landing page that silently belongs to someone else.
+func (h *Handler) returnToFromRequest(r *http.Request) (string, error) {
+	raw := r.URL.Query().Get("return_to")
+	if raw == "" {
+		return "", nil
+	}
+	if len(h.platformReturnOrigins) == 0 {
+		return "", errReturnToNotAllowed
+	}
+	// Refused before it is encoded rather than after it is decoded: a separator inside the
+	// value would let a return_to carry a fourth field into a two-separator parse. (Go's
+	// url.Parse already rejects ASCII control characters, so this is the belt behind the
+	// braces — and it is the belt that is checked by a test.)
+	if strings.Contains(raw, stateSep) {
+		return "", errReturnToNotAllowed
+	}
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || u.Host == "" || u.User != nil {
+		return "", errReturnToNotAllowed
+	}
+	origin := u.Scheme + "://" + u.Host
+	for _, allowed := range h.platformReturnOrigins {
+		if origin == allowed {
+			return raw, nil
+		}
+	}
+	return "", errReturnToNotAllowed
+}
+
+// encodeCalendarState builds the plaintext that goes into the provider's EncryptState:
+// provider\x1fuserID, plus \x1freturnTo when there is one.
+//
+// ⚠️ The third field is appended only when it is non-empty, so an instance with the
+// feature off mints exactly the two-field state it always did. That is not tidiness: a
+// state minted by this code and handed back to an OLDER binary mid-deploy is parsed by a
+// single strings.Index, which would read a trailing separator as part of the user id and
+// exchange against a user that does not exist. The parse side treats one, two and three
+// fields alike, so nothing here depends on the third field always being present.
+func encodeCalendarState(provider, userID, returnTo string) string {
+	s := provider + stateSep + userID
+	if returnTo != "" {
+		s += stateSep + returnTo
+	}
+	return s
+}
+
+// parseCalendarState splits a decrypted state into its three fields.
+//
+// At most two separators, so the third field keeps any it contains rather than being
+// truncated, and so the two shapes that predate this function still parse: a bare userID
+// (before the provider was encoded) and provider\x1fuserID (an OAuth round trip that was
+// in flight across the deploy that added the third field).
+func parseCalendarState(raw string) (provider, userID, returnTo string) {
+	parts := strings.SplitN(raw, stateSep, 3)
+	switch len(parts) {
+	case 1:
+		return "", parts[0], ""
+	case 2:
+		return parts[0], parts[1], ""
+	default:
+		return parts[0], parts[1], parts[2]
+	}
+}
 
 // ConnectCalendar handles GET /v1/calendar/connect (auth required).
 // Redirects the browser to the chosen provider's OAuth consent page.
 // Optional ?provider=<name> selects a provider; defaults to the primary.
+//
+// Optional ?return_to=<absolute URL> asks the callback to finish on a platform console
+// instead of this instance's /admin/calendar. It is checked against
+// PLATFORM_RETURN_ORIGINS HERE, on an authenticated request, and then carried inside the
+// encrypted state — which is what makes the callback's redirect safe: the destination was
+// chosen and checked at connect time, not read off the callback's own URL.
 func (h *Handler) ConnectCalendar(w http.ResponseWriter, r *http.Request) {
 	if h.demoMode {
 		h.writeError(w, http.StatusServiceUnavailable, "not available in the demo")
@@ -37,9 +125,15 @@ func (h *Handler) ConnectCalendar(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	returnTo, err := h.returnToFromRequest(r)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	user, _ := userFromContext(r.Context())
-	// Encode the provider in the state so the shared callback routes correctly.
-	state, err := p.EncryptState(p.Name() + stateSep + user.ID)
+	// Encode the provider in the state so the shared callback routes correctly, and the
+	// return_to so it knows where to finish.
+	state, err := p.EncryptState(encodeCalendarState(p.Name(), user.ID, returnTo))
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "calendar connect: encrypt state", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "internal error")
