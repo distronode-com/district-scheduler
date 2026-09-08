@@ -16,8 +16,8 @@ import (
 //
 // It exists because the two mints it replaced were on different receivers: CreateAPIKey
 // writes one row on the handle, and CreateWorkspace writes its key inside the transaction
-// that provisions the whole tenant. Taking an interface is what lets there be ONE
-// implementation of the key format rather than one per caller.
+// that provisions the whole tenant. Taking an interface is what let those two share one
+// implementation of the key format instead of holding a copy each.
 type keyExecer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
