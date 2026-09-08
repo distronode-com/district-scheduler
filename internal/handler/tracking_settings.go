@@ -22,11 +22,25 @@ var (
 const googleTagSources = "https://www.googletagmanager.com https://www.google-analytics.com https://*.google-analytics.com https://*.googletagmanager.com"
 
 // strictPublicCSP is the secure default applied to public pages when no code
-// injection is configured: inline scripts/styles only, no external origins.
-// img-src allows https:/data: so an operator's external brand logo (and any
+// injection is configured: same-origin and inline scripts/styles only, no external
+// origins. img-src allows https:/data: so an operator's external brand logo (and any
 // remote avatar) loads; images are inert, so this is a safe relaxation even on
 // the otherwise-strict default policy.
-const strictPublicCSP = "default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'"
+//
+// ⛔ `'self'` IS IN script-src, AND IT WAS MISSING UNTIL M9. The directive read
+// `script-src 'unsafe-inline'`, which refuses every same-origin script — a CSP source
+// list is an allowlist, and `'unsafe-inline'` permits inline code and nothing else.
+// The visible cost was a console error on every booking page behind Cloudflare, whose
+// edge injects `/cdn-cgi/challenge-platform/scripts/jsd/main.js` into the response as a
+// same-origin `<script src>`; the policy blocked it and the bot-score signal it feeds
+// was silently absent. The relaxed publicCSP below has always carried `'self'`, so this
+// also removes an asymmetry where turning a tracking tag ON made the policy accept MORE
+// of our own origin than the strict default did.
+//
+// ⚠️ It is not a weakening in any way that matters here: these pages already run inline
+// script (the whole booking flow is inline), so `'unsafe-inline'` is the permissive term
+// in this list and `'self'` adds only what the same origin serves — which is us.
+const strictPublicCSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'"
 
 // dataLayerFields is the set of keys an operator may push into window.dataLayer.
 // Labels live in the admin UI; the backend only validates keys.
