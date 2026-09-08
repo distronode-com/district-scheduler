@@ -397,14 +397,106 @@ func TestSSOHandoff_withoutAdminSPAAHandoffWithNoNextIs404(t *testing.T) {
 }
 
 // The other half, and the one the platform actually uses: the calendar connect round
-// trip hands off with an explicit next. Nothing about it changes when the console is
-// off, including a next that names /admin/ — the caller said where to land, and this
-// endpoint is not the place to second-guess an origin-checked path.
+// trip hands off with an explicit next. Nothing about a next OUTSIDE /admin changes when
+// the console is off — that is what explicit destinations exist for.
 func TestSSOHandoff_withoutAdminSPAAnExplicitNextIsUnchanged(t *testing.T) {
-	for _, next := range []string{"/v1/calendar/connect?provider=google", "/admin/bookings"} {
+	// wantLocation differs from next only for the climbing case: http.Redirect runs
+	// path.Clean on a rooted target itself, so the header carries the resolved path —
+	// which is the same normalisation nextIsAdminConsole applies to decide, and the
+	// agreement between the two is worth pinning rather than assuming.
+	for next, wantLocation := range map[string]string{
+		"/v1/calendar/connect?provider=google":                                              "/v1/calendar/connect?provider=google",
+		"/v1/calendar/connect?provider=google&return_to=https%3A%2F%2Fconsole.example.test": "/v1/calendar/connect?provider=google&return_to=https%3A%2F%2Fconsole.example.test",
+		"/book/intro": "/book/intro",
+		// ⚠️ It CLIMBS OUT of the console, so it lands outside it and is allowed. The
+		// browser resolves it the same way; refusing on the prefix alone would refuse a
+		// destination that is not the console.
+		"/admin/../book/intro": "/book/intro",
+	} {
 		t.Run(next, func(t *testing.T) {
 			h, _ := newSSOHandler(t)
 			h.SetAdminSPA(false)
+
+			rec := doSSO(h, "/v1/auth/sso?token="+ssoToken(t, ssoSecret, ssoClaimSet())+
+				"&next="+url.QueryEscape(next))
+
+			if rec.Code != http.StatusFound {
+				t.Fatalf("status = %d; want 302 — %s", rec.Code, rec.Body.String())
+			}
+			if loc := rec.Header().Get("Location"); loc != wantLocation {
+				t.Errorf("Location = %q; want %q", loc, wantLocation)
+			}
+		})
+	}
+}
+
+// ⛔ H3: AN EXPLICIT next UNDER /admin IS REFUSED TOO, AND THIS FILE ASSERTED THE
+// OPPOSITE UNTIL F6.
+//
+// The old rule — "the caller said where to land" — read as deference and was a bypass:
+// both native clients send `next=/admin/` on every hand-off, so with the console off the
+// guard fired for nobody and the person got a 404 with a session cookie already set and
+// the single-use token already spent. The apps could not even report it, because only a
+// non-3xx response opens their error path.
+//
+// The jti assertion is the load-bearing half. A refusal that burned the token would make
+// "try again" impossible for a reason nothing on screen could explain.
+func TestSSOHandoff_withoutAdminSPAAnExplicitAdminNextIs404(t *testing.T) {
+	for _, next := range []string{
+		"/admin/",
+		"/admin",
+		"/admin/bookings",
+		"/admin/settings/video",
+		"/admin/?tab=hosts",
+		// Percent-encoded: url.Parse decodes before the comparison, because the mux
+		// matches the decoded path.
+		"/%61dmin/",
+		// Normalisation: a browser resolves this to /admin/bookings.
+		"/admin/settings/../bookings",
+	} {
+		t.Run(next, func(t *testing.T) {
+			h, database := newSSOHandler(t)
+			h.SetAdminSPA(false)
+
+			rec := doSSO(h, "/v1/auth/sso?token="+ssoToken(t, ssoSecret, ssoClaimSet())+
+				"&next="+url.QueryEscape(next))
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d; want 404 — %s", rec.Code, rec.Body.String())
+			}
+			if loc := rec.Header().Get("Location"); loc != "" {
+				t.Errorf("Location = %q; want no redirect into a console that is not served", loc)
+			}
+			for _, c := range rec.Result().Cookies() {
+				if c.Name == "calnode_session" {
+					t.Fatal("a session cookie was minted for a hand-off that could not land")
+				}
+			}
+
+			var sessions, nonces int
+			if err := database.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&sessions); err != nil {
+				t.Fatalf("count sessions: %v", err)
+			}
+			if err := database.QueryRow(`SELECT COUNT(*) FROM sso_nonces`).Scan(&nonces); err != nil {
+				t.Fatalf("count nonces: %v", err)
+			}
+			if sessions != 0 {
+				t.Errorf("sessions = %d; want 0 — the refusal must precede the session", sessions)
+			}
+			if nonces != 0 {
+				t.Errorf("nonces = %d; a refused hand-off must not burn the token", nonces)
+			}
+		})
+	}
+}
+
+// With the console ON — every single-tenant instance, and every multi-tenant one before
+// the flip — a next under /admin is the ordinary case and must keep working. Without
+// this, H3 would read as "refuse /admin" rather than "refuse /admin when it 404s".
+func TestSSOHandoff_withTheConsoleOnAnAdminNextStillLands(t *testing.T) {
+	for _, next := range []string{"/admin/", "/admin/bookings"} {
+		t.Run(next, func(t *testing.T) {
+			h, _ := newSSOHandler(t) // SetAdminSPA never called: the console is served
 
 			rec := doSSO(h, "/v1/auth/sso?token="+ssoToken(t, ssoSecret, ssoClaimSet())+
 				"&next="+url.QueryEscape(next))

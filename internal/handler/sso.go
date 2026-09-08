@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -172,21 +174,31 @@ func (h *Handler) SSOHandoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ⛔ With the admin console switched off (ADMIN_SPA=off), ssoDefaultNext names a route
-	// that now 404s. Refusing here rather than redirecting into it is the difference
-	// between a hand-off that failed and a hand-off that succeeded into a dead end: the
-	// session cookie would already be set, the jti already spent, and the person would be
-	// looking at a 404 on a host whose console is somewhere else entirely. So this runs
-	// before the nonce is claimed and before any session exists, for the same reason the
-	// ?next= validation below does.
+	// ⛔ With the admin console switched off (ADMIN_SPA=off), every route under /admin
+	// 404s — ssoDefaultNext included. Refusing here rather than redirecting into it is the
+	// difference between a hand-off that failed and a hand-off that succeeded into a dead
+	// end: the session cookie would already be set, the jti already spent, and the person
+	// would be looking at a 404 on a host whose console is somewhere else entirely. So
+	// this runs before the nonce is claimed and before any session exists, for the same
+	// reason the ?next= validation below does.
 	//
-	// An EXPLICIT next is untouched, including one naming /admin/: the caller said where
-	// to land, and the platform's own calendar-connect round trip is exactly that case.
+	// ⛔ AN EXPLICIT next UNDER /admin IS REFUSED TOO, AND THIS USED TO SAY THE OPPOSITE
+	// (H3). The old rule was "the caller said where to land", which reads as deference and
+	// was in fact a bypass: both native clients send `next=/admin/` on every hand-off
+	// (iOS SchedulingSSOClient, Android SchedulingRepository), so the guard fired for
+	// nobody. Worse, the failure was invisible — the app sees a 302, opens the sheet, and
+	// shows a bare 404 with no error path taken, because only a non-3xx opens one. A probe
+	// asserting the hand-off answers 3xx stays green straight through the flip.
+	//
+	// A non-admin next is unchanged, which is the case that matters: the calendar-connect
+	// round trip (`?next=/v1/calendar/connect?provider=…&return_to=…`) is why explicit
+	// destinations exist at all.
 	rawNext := r.URL.Query().Get("next")
-	if rawNext == "" && h.adminSPAOff {
-		h.logger.WarnContext(r.Context(), "sso: no next and no admin console on this instance", "iss", claims.Iss)
+	if h.adminSPAOff && (rawNext == "" || nextIsAdminConsole(rawNext)) {
+		h.logger.WarnContext(r.Context(), "sso: hand-off would land on a console this instance does not serve",
+			"iss", claims.Iss, "had_next", rawNext != "")
 		h.writeError(w, http.StatusNotFound,
-			"this instance does not serve the admin console; the hand-off needs an explicit next")
+			"this instance does not serve the admin console; the hand-off needs an explicit next outside /admin")
 		return
 	}
 
@@ -374,6 +386,31 @@ func (h *Handler) ssoOwnerExists(ctx context.Context, workspaceID string) bool {
 		return true
 	}
 	return n > 0
+}
+
+// nextIsAdminConsole reports whether next would land on the embedded admin console —
+// which, with ADMIN_SPA=off, is three routes that answer 404 (see server.New).
+//
+// It normalises the way a browser does before comparing, because the value is compared
+// against a mux pattern and the mux sees the normalised path: url.Parse strips the query
+// and percent-decodes (`/%61dmin/` is `/admin/`), and path.Clean resolves `.` and `..`
+// (so `/admin/../book/x` really does land outside the console and is allowed, while
+// `/admin` and `/admin/` collapse to the same string).
+//
+// ⚠️ Case-SENSITIVE on purpose. http.ServeMux matches paths byte for byte, so `/ADMIN/`
+// is not the console — it is an unmatched path that 404s for its own reason. Matching
+// case-insensitively here would refuse a hand-off the mux would have served, which is a
+// different bug in the same place.
+//
+// An unparseable value reports true: ssoNextPath refuses it a few lines later anyway,
+// and with the console off, "cannot tell" has to read as "might be the console".
+func nextIsAdminConsole(next string) bool {
+	u, err := url.Parse(next)
+	if err != nil {
+		return true
+	}
+	p := path.Clean("/" + strings.TrimPrefix(u.Path, "/"))
+	return p == "/admin" || strings.HasPrefix(p, "/admin/")
 }
 
 // ssoNextPath validates the optional ?next= target, returning the default when it is
