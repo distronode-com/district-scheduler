@@ -771,7 +771,11 @@ func New(ctx context.Context, cfg *config.Config, db *db.DB, logger *slog.Logger
 		logger.Info("trusting forwarded headers from proxies", "cidrs", cfg.TrustedProxyCIDRs)
 	}
 
-	return TrustClientIP(trustedProxies)(RequestID(Logging(logger, SameOriginCheck(mux)))), drain
+	// SecurityHeaders sits INSIDE Logging and OUTSIDE SameOriginCheck, which is the only
+	// position that covers everything: outside the mux so every 404 and every static asset
+	// carries the headers, and outside the CSRF check so its 403 does too. It sets before
+	// calling through, so a handler with its own opinion about one of these keys still wins.
+	return TrustClientIP(trustedProxies)(RequestID(Logging(logger, SecurityHeaders(SameOriginCheck(mux))))), drain
 }
 
 // seedSMTPToDB writes env-var SMTP settings into the DB on first boot so they
