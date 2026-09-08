@@ -191,7 +191,7 @@ fact about this instance's login, not about the directory.
 
 ⛔ **`role: "owner"` is a TRANSFER.** The same transaction sets `is_owner = 0` on every
 other user of the workspace, so exactly one owner exists before and after — the invariant
-`POST …/users/{id}/transfer-ownership` maintains holds here too.
+the workspace's own `POST /v1/users/{id}/transfer-ownership` maintains holds here too.
 
 ⛔ **Demoting the only owner is refused: 409 `{"error":"owner_demotion_requires_transfer"}`,
 and nothing changes.** Obeying it would leave a workspace with no owner, which nothing on
@@ -201,8 +201,8 @@ re-send the demotion if it is still wanted.
 
 #### `POST …/{id}/users/{uid}/api-keys` → 201
 
-Body `{"name": "district"}` (1–64 characters). Response
-`{"id": "...", "name": "district", "api_key": "cno_…"}` — the plaintext is **shown once**.
+Body `{"name": "console"}` (1–64 characters). Response
+`{"id": "...", "name": "console", "api_key": "cno_…"}` — the plaintext is **shown once**.
 The key is **managed** (below). **404** when the user is not that workspace's, or is
 archived.
 
