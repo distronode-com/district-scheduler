@@ -250,3 +250,306 @@ func (h *Handler) UpsertWorkspaceUser(w http.ResponseWriter, r *http.Request) {
 		"id": userID, "email": email, "name": name, "role": req.Role, "created": created,
 	})
 }
+
+// platformUserInWorkspace resolves {uid} within {id}, writing the 404 when the user is not
+// that workspace's or is archived.
+//
+// ⛔ Archived is a 404 rather than a 409. The platform's view of an archived person is that
+// they are not in the workspace, and minting them a credential is exactly what archiving
+// was supposed to stop; a 409 would invite a retry loop against a decision that has to be
+// undone through the upsert route first.
+func (h *Handler) platformUserInWorkspace(w http.ResponseWriter, r *http.Request, workspaceID, userID string) bool {
+	var archived sql.NullString
+	err := h.db.QueryRowContext(r.Context(),
+		`SELECT archived_at FROM users WHERE workspace_id = ? AND id = ?`, workspaceID, userID).
+		Scan(&archived)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && archived.Valid) {
+		h.writeError(w, http.StatusNotFound, "user not found")
+		return false
+	}
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "platform: read workspace user", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return false
+	}
+	return true
+}
+
+// MintWorkspaceUserAPIKey handles POST /v1/platform/workspaces/{id}/users/{uid}/api-keys.
+//
+// Body: {"name"}. Response 201: {"id", "name", "api_key"} — the plaintext, once.
+//
+// ⛔ ROTATION, and it is the whole reason this is a transaction. Minting a key with a name
+// this user already has DELETES the earlier managed key of that name in the same
+// transaction. A caller that lost a key and re-mints therefore never accumulates
+// credentials, and the old one stops working at the instant the new one starts rather than
+// staying live and unaudited on whatever host still holds it. The trade is deliberate: a
+// re-mint is a revocation, so a caller that wants two live keys has to give them two names.
+//
+// Only MANAGED keys of that name are rotated. A key the person minted for themselves under
+// the same name is theirs, and the platform deleting it would be reaching across the line
+// this packet exists to draw.
+func (h *Handler) MintWorkspaceUserAPIKey(w http.ResponseWriter, r *http.Request) {
+	if !h.platformAuthorized(w, r) {
+		return
+	}
+	workspaceID, userID := r.PathValue("id"), r.PathValue("uid")
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" || len(name) > 64 {
+		h.writeError(w, http.StatusBadRequest, "name must be 1 to 64 characters")
+		return
+	}
+	if !h.platformWorkspaceExists(w, r, workspaceID) {
+		return
+	}
+	if !h.platformUserInWorkspace(w, r, workspaceID, userID) {
+		return
+	}
+
+	tx, err := h.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "platform: mint key begin tx", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.ExecContext(r.Context(),
+		`DELETE FROM api_keys WHERE workspace_id = ? AND user_id = ? AND name = ? AND managed = 1`,
+		workspaceID, userID, name); err != nil {
+		h.logger.ErrorContext(r.Context(), "platform: rotate old key", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	keyID, plainKey, err := mintAPIKey(r.Context(), tx, workspaceID, userID, name, true, now)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "platform: mint key", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		h.logger.ErrorContext(r.Context(), "platform: mint key commit", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	h.logger.InfoContext(r.Context(), "platform: api key minted",
+		"workspace_id", workspaceID, "user_id", userID, "key_id", keyID, "name", name)
+	h.writeJSON(w, http.StatusCreated, map[string]any{
+		"id": keyID, "name": name, "api_key": plainKey,
+	})
+}
+
+// DeleteWorkspaceUserAPIKey handles
+// DELETE /v1/platform/workspaces/{id}/users/{uid}/api-keys/{keyId} → 204.
+//
+// Managed or not: a key on that user in that workspace is one the platform may revoke.
+// Anything else is 404, so a caller cannot use this route to learn which key ids exist in
+// a workspace it did not name.
+func (h *Handler) DeleteWorkspaceUserAPIKey(w http.ResponseWriter, r *http.Request) {
+	if !h.platformAuthorized(w, r) {
+		return
+	}
+	workspaceID, userID, keyID := r.PathValue("id"), r.PathValue("uid"), r.PathValue("keyId")
+	if !h.platformWorkspaceExists(w, r, workspaceID) {
+		return
+	}
+
+	res, err := h.db.ExecContext(r.Context(),
+		`DELETE FROM api_keys WHERE workspace_id = ? AND user_id = ? AND id = ?`,
+		workspaceID, userID, keyID)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "platform: delete api key", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		h.writeError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	h.logger.InfoContext(r.Context(), "platform: api key deleted",
+		"workspace_id", workspaceID, "user_id", userID, "key_id", keyID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// MarkWorkspaceWebhooksManaged handles PATCH /v1/platform/workspaces/{id}/webhooks.
+//
+// Body: {"url", "managed": true}. Response 200: {"updated": n}.
+//
+// This is how a tenancy provisioned BEFORE migration 00063 gets its provisioning webhook
+// marked. The migration could not do it: unlike the API key, whose name
+// ('platform-provisioned') is written by exactly one statement in the tree, a webhook row
+// carries nothing that distinguishes the platform's from one the workspace created — url,
+// events and fields are all values the caller chose. The platform knows which url it gave;
+// nothing in the database does.
+//
+// Matching is on the exact url, and every webhook in the workspace with that url is
+// marked, because the same subscription may exist on more than one user. Idempotent: a
+// second call reports the same count.
+//
+// ⛔ {"managed": false} is 400, not an unmark. Managed is one-way on purpose. The flag's
+// value is that a credential caller cannot reach the row, and an un-manage route is a way
+// to reach it — the platform's own way, but the platform token is one bearer, and a
+// mistaken un-manage restores exactly the delete button this packet removed. Deleting the
+// row and re-creating it is the reversal, and it is one an operator has to mean.
+func (h *Handler) MarkWorkspaceWebhooksManaged(w http.ResponseWriter, r *http.Request) {
+	if !h.platformAuthorized(w, r) {
+		return
+	}
+	workspaceID := r.PathValue("id")
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var req struct {
+		URL     string `json:"url"`
+		Managed *bool  `json:"managed"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if strings.TrimSpace(req.URL) == "" {
+		h.writeError(w, http.StatusBadRequest, "url is required")
+		return
+	}
+	if req.Managed == nil || !*req.Managed {
+		h.writeError(w, http.StatusBadRequest, "managed must be true; a managed row cannot be unmanaged")
+		return
+	}
+	if !h.platformWorkspaceExists(w, r, workspaceID) {
+		return
+	}
+
+	res, err := h.db.ExecContext(r.Context(),
+		`UPDATE webhooks SET managed = 1 WHERE workspace_id = ? AND url = ?`, workspaceID, req.URL)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "platform: mark webhooks managed", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	updated, _ := res.RowsAffected()
+
+	h.logger.InfoContext(r.Context(), "platform: webhooks marked managed",
+		"workspace_id", workspaceID, "url", req.URL, "updated", updated)
+	h.writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
+}
+
+// ArchiveWorkspaceUser handles POST /v1/platform/workspaces/{id}/users/{uid}/archive → 200
+// {"archived": true}.
+//
+// It mirrors ArchiveUser's rules, minus the ones that are about an ADMIN actor rather than
+// about the workspace: the platform is not a member, so "you cannot archive yourself" and
+// "only the owner may archive an admin" do not apply to it. What does apply is carried
+// over exactly:
+//
+//   - ⛔ The upcoming-bookings refusal. This fork refuses (409) to archive a member who
+//     still hosts a booking that has not happened, because archiving deactivates their
+//     event types and hides them from routing while the meeting stays on the calendar with
+//     a host nobody can reach. Answered here as 409 {"error":"upcoming_bookings","count":n}
+//     and nothing is changed. Reassign or cancel first.
+//   - The owner cannot be archived — 409 {"error":"owner_cannot_be_archived"}. Same reason
+//     as the demotion refusal above: a workspace with no owner cannot appoint one.
+//   - Their event types are deactivated, so public booking pages stop taking bookings.
+//
+// Beyond ArchiveUser, and the reason this is a transaction: the person's MANAGED API keys
+// and their sessions and MCP tokens are deleted with the same commit. Archiving sets
+// archived_at, which RequireAuth already checks, so a live key stops working the moment it
+// lands — but leaving the row means an un-archive through the upsert route would silently
+// bring a credential back to life on whatever host still held it. Their own unmanaged keys
+// are left alone: those are the person's, not the platform's, and are inert while archived.
+func (h *Handler) ArchiveWorkspaceUser(w http.ResponseWriter, r *http.Request) {
+	if !h.platformAuthorized(w, r) {
+		return
+	}
+	workspaceID, userID := r.PathValue("id"), r.PathValue("uid")
+	if !h.platformWorkspaceExists(w, r, workspaceID) {
+		return
+	}
+	if !h.platformUserInWorkspace(w, r, workspaceID, userID) {
+		return
+	}
+
+	var isOwner int
+	if err := h.db.QueryRowContext(r.Context(),
+		`SELECT is_owner FROM users WHERE workspace_id = ? AND id = ?`, workspaceID, userID).
+		Scan(&isOwner); err != nil {
+		h.logger.ErrorContext(r.Context(), "platform: archive read user", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if isOwner != 0 {
+		h.writeJSON(w, http.StatusConflict, map[string]any{"error": "owner_cannot_be_archived"})
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var upcoming int
+	if err := h.db.QueryRowContext(r.Context(), `
+		SELECT COUNT(*) FROM bookings
+		WHERE workspace_id = ? AND host_id = ? AND status != 'cancelled' AND end_at > ?`,
+		workspaceID, userID, now).Scan(&upcoming); err != nil {
+		h.logger.ErrorContext(r.Context(), "platform: archive count bookings", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if upcoming > 0 {
+		h.writeJSON(w, http.StatusConflict, map[string]any{"error": "upcoming_bookings", "count": upcoming})
+		return
+	}
+
+	tx, err := h.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "platform: archive begin tx", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	// archived_by is left NULL: the archiver is the platform, which has no users row, and
+	// writing an id that names nobody would make RestoreUser's "members you archived
+	// yourself" check compare against a phantom. NULL means "not by a member of this
+	// workspace", which is the truth and which that check already treats as owner-only.
+	for _, stmt := range []struct {
+		what string
+		sql  string
+	}{
+		{"archive user", `UPDATE users SET archived_at = ? WHERE workspace_id = ? AND id = ?`},
+		{"deactivate event types", `UPDATE event_types SET is_active = 0 WHERE workspace_id = ? AND user_id = ?`},
+		{"revoke managed keys", `DELETE FROM api_keys WHERE workspace_id = ? AND user_id = ? AND managed = 1`},
+		{"revoke sessions", `DELETE FROM sessions WHERE workspace_id = ? AND user_id = ?`},
+		{"revoke oauth tokens", `DELETE FROM oauth_access_tokens WHERE workspace_id = ? AND user_id = ?`},
+	} {
+		var err error
+		if stmt.what == "archive user" {
+			_, err = tx.ExecContext(r.Context(), stmt.sql, now, workspaceID, userID)
+		} else {
+			_, err = tx.ExecContext(r.Context(), stmt.sql, workspaceID, userID)
+		}
+		if err != nil {
+			h.logger.ErrorContext(r.Context(), "platform: archive: "+stmt.what, "error", err)
+			h.writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		h.logger.ErrorContext(r.Context(), "platform: archive commit", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	h.logger.InfoContext(r.Context(), "platform: workspace user archived",
+		"workspace_id", workspaceID, "user_id", userID)
+	h.writeJSON(w, http.StatusOK, map[string]any{"archived": true})
+}
