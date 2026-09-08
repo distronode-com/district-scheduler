@@ -24,11 +24,17 @@ type keyExecer interface {
 
 // mintAPIKey writes one api_keys row and returns its id and the plaintext key.
 //
-// ⛔ The single implementation of the credential format, deliberately. "cno_" + 32 random
-// bytes as hex, hashed with hashAPIKey (SHA-256) before storage, plaintext returned to the
-// caller exactly once and never stored. It was written out twice — once here, once in
-// CreateWorkspace — and a second copy of a credential format is how the two drift into
-// keys one code path can mint and another cannot verify.
+// "cno_" + 32 random bytes as hex, hashed with hashAPIKey (SHA-256) before storage,
+// plaintext returned to the caller exactly once and never stored. It was written out twice
+// — once here, once in CreateWorkspace — and a second copy of a credential format is how
+// two drift into keys one code path mints and another cannot verify.
+//
+// ⚠️ It is not yet the ONLY implementation, and saying so would be the kind of confident
+// comment that hides the next bug: Setup (/v1/setup, setup.go) still mints its bootstrap
+// key inline. That one is the single-tenant first-user path — it runs before any workspace
+// exists, names no workspace_id, and cannot mint a managed key — so folding it in is a
+// separate change rather than an oversight here. `grep -rn '"cno_"' internal/` is the
+// enumeration; it returns two sites.
 //
 // workspace_id is named rather than defaulted. On the platform handle the column default
 // resolves to the empty string and the row fails its foreign key; on a bound handle the
