@@ -75,6 +75,29 @@ func (h *Handler) loadTrackingSettings(ctx context.Context) trackingSettings {
 	if fieldsJSON != "" {
 		_ = json.Unmarshal([]byte(fieldsJSON), &t.DataLayerFields)
 	}
+	// ⛔ head_html IS IGNORED IN MULTI-TENANT MODE, AT READ TIME AND FOR EVERY READER (L6).
+	//
+	// It is raw HTML injected into the <head> of the workspace's own booking pages, and
+	// publicCSP relaxes that page's Content-Security-Policy to fit it. Self-scoped —
+	// cookies are host-only — but on the OPERATOR's domain, and the relaxation is the
+	// worse half: a tenant that can write it can turn a strict policy into `script-src
+	// https:` on a page that collects names, emails and card details.
+	//
+	// Blanked HERE rather than in each caller because this is the one chokepoint: the
+	// booking page, the manage page, publicCSP and GET /v1/settings/tracking all read
+	// through it. Blanking it also means the CSP never relaxes for a value nothing will
+	// render, since publicCSP decides on the same struct.
+	//
+	// Read-time rather than write-time alone, so a row written before this shipped — or
+	// by an import, or by the platform's own provisioning — stops rendering the moment
+	// the process restarts, instead of waiting for someone to save the page.
+	//
+	// The GA4/GTM id fields are untouched: they are validated against an exact format,
+	// they name the tenant's own analytics property, and they are what the platform's
+	// catalog offers.
+	if h.multiTenant {
+		t.HeadHTML = ""
+	}
 	// Defence-in-depth: only surface IDs that still match the format (so junk in the DB can
 	// never reach a <script>). Stored values are validated on write.
 	if !gtmIDRe.MatchString(t.GTMContainerID) {
@@ -153,6 +176,19 @@ func (h *Handler) PatchTrackingSettings(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	// ⛔ The write half of L6. A non-empty head_html is 400 `managed_by_platform` in
+	// multi-tenant mode: the field injects raw HTML into the <head> of a page on the
+	// operator's domain and relaxes that page's CSP to fit it, and no surface of the
+	// platform's own console has ever offered it.
+	//
+	// Refused rather than silently stripped, because a tenant who believes their tag is
+	// installed and sees no traffic has a worse problem than one who is told no. An
+	// EMPTY value passes: it is how the console clears the field, and clearing it is
+	// exactly what this mode wants.
+	if h.multiTenant && strings.TrimSpace(req.HeadHTML) != "" {
+		h.writeError(w, http.StatusBadRequest, platformManagedMessage)
 		return
 	}
 	if len(req.HeadHTML) > 32<<10 {

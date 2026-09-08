@@ -1,8 +1,12 @@
 package handler
 
 import (
+	"context"
+	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/calnode/calnode/internal/dbtest"
 )
 
 func TestTagIDFormats(t *testing.T) {
@@ -49,5 +53,46 @@ func TestPublicCSP_nativeTag(t *testing.T) {
 	csp2 := publicCSP(trackingSettings{GTMContainerID: "GTM-ABC123", CSPAllow: "https://example.com"})
 	if !strings.Contains(csp2, "https://www.googletagmanager.com") {
 		t.Errorf("custom allowlist should still include Google tag domains: %q", csp2)
+	}
+}
+
+// ⛔ L6's sharpest half: the CSP RELAXATION, not the markup.
+//
+// publicCSP widens a booking page's policy to `script-src 'self' 'unsafe-inline' https:`
+// as soon as head_html is non-empty. Blanking the field at read time is what keeps the
+// strict policy, because publicCSP decides on the same struct loadTrackingSettings
+// returns — so there is no second place for the two to disagree, and no window in which
+// the page is served strict markup under a relaxed policy or the reverse.
+func TestLoadTrackingSettings_multiTenantKeepsTheStrictCSP(t *testing.T) {
+	database := dbtest.Open(t)
+	t.Cleanup(func() { database.Close() })
+	h := New(database, slog.New(slog.DiscardHandler))
+	seedSettingsRow(t, database)
+
+	if _, err := database.Exec(
+		`UPDATE server_settings SET head_html = ? WHERE id = 1`,
+		`<script src="https://attacker.test/a.js"></script>`); err != nil {
+		t.Fatalf("seed head_html: %v", err)
+	}
+
+	// The control: single-tenant relaxes, which is the behaviour a self-hoster asked for
+	// by filling the field in.
+	single := h.loadTrackingSettings(context.Background())
+	if single.HeadHTML == "" {
+		t.Fatal("the single-tenant control did not read the seeded head_html back")
+	}
+	if got := publicCSP(single); got == strictPublicCSP {
+		t.Fatal("single-tenant did not relax the CSP; the control proves nothing")
+	}
+
+	h.SetMultiTenant(true)
+	multi := h.loadTrackingSettings(context.Background())
+	if multi.HeadHTML != "" {
+		t.Errorf("HeadHTML = %q; want empty in multi-tenant mode", multi.HeadHTML)
+	}
+	if got := publicCSP(multi); got != strictPublicCSP {
+		t.Errorf("CSP = %q;\nwant the strict default %q —\n"+
+			"a stored head_html must not widen script-src on a page that collects card details",
+			got, strictPublicCSP)
 	}
 }
