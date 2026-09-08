@@ -2,6 +2,7 @@ package netutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -117,6 +118,35 @@ func MetadataSafeTransport(logger *slog.Logger, logMsg string) http.RoundTripper
 	return dialGuardTransport(ResolveNotMetadata, logger, logMsg)
 }
 
+// Resolver is the hostname lookup a dial guard consults: ResolveSafe (strict) and
+// ResolveNotMetadata (narrow) are the two productions ones, and a test supplies its own
+// to exercise a NAME that resolves private without depending on real DNS. An IP literal
+// needs no stub — LookupIPAddr returns it unchanged — but a rebinding name does, and
+// that is the case the strict guard exists for.
+type Resolver func(context.Context, string) ([]net.IPAddr, error)
+
+// ErrBlockedAddress is what a guarded transport fails a dial with.
+//
+// A sentinel rather than a bare string so a caller can map it to its OWN user-facing
+// sentence: the error a guarded dial produces travels up through http.Client as a
+// *url.Error, and a client that surfaced it verbatim would put "resolved to a blocked
+// address" in front of a customer typing their own server's hostname. errors.Is sees
+// through url.Error's Unwrap, so the mapping is one check at the call site.
+var ErrBlockedAddress = errors.New("target resolved to a blocked address")
+
+// GuardedTransport returns a transport that resolves every dial through resolve and
+// connects to the resolved address directly, never re-resolving the hostname — so there
+// is no DNS-rebinding gap between the check and the connection. Every redirect hop that
+// re-enters the client is re-checked for the same reason.
+//
+// Exported so a caller can pick the tier per instance rather than per build.
+// internal/caldav is the one that does: a self-hoster's CalDAV server legitimately lives
+// on their own private network, while on a multi-tenant instance the same field is a
+// tenant-supplied string pointing at the operator's cluster (M1).
+func GuardedTransport(resolve Resolver, logger *slog.Logger, logMsg string) http.RoundTripper {
+	return dialGuardTransport(resolve, logger, logMsg)
+}
+
 func dialGuardTransport(resolve func(context.Context, string) ([]net.IPAddr, error), logger *slog.Logger, logMsg string) http.RoundTripper {
 	baseDialer := &net.Dialer{}
 	return &http.Transport{
@@ -128,7 +158,9 @@ func dialGuardTransport(resolve func(context.Context, string) ([]net.IPAddr, err
 			addrs, err := resolve(ctx, host)
 			if err != nil {
 				logger.Warn(logMsg, "host", host, "error", err)
-				return nil, fmt.Errorf("netutil: target resolved to a blocked address")
+				// The resolved address is in the LOG and never in the error: the person
+				// who configured the target is the person this error reaches.
+				return nil, fmt.Errorf("netutil: %w", ErrBlockedAddress)
 			}
 			return baseDialer.DialContext(ctx, network, net.JoinHostPort(addrs[0].IP.String(), port))
 		},

@@ -232,7 +232,15 @@ func BuildHandler(ctx context.Context, cfg *config.Config, db *db.DB, logger *sl
 	// needs no instance-level OAuth app — each host connects their own server with an
 	// app-specific password — so it's always available. Registered last so it never displaces
 	// Google/Microsoft as the OAuth-callback primary.
-	if cdav, err := caldav.New(db, cfg.EncryptionKey); err != nil {
+	//
+	// ⛔ The SSRF tier is chosen HERE, from the mode, and not in the package (M1).
+	// `server_url` is a bring-your-own-server field: a self-hoster pointing it at a
+	// Nextcloud on their own LAN is the intended configuration, so single-tenant keeps
+	// the narrow metadata-only guard. On a multi-tenant instance the same string is
+	// supplied by a TENANT and the private network it can reach is the OPERATOR's — the
+	// pod network, the node's exporters, the media plane — so every dial and every
+	// redirect hop goes through the strict guard webhooks already use.
+	if cdav, err := caldav.New(db, cfg.EncryptionKey, caldav.WithStrictSSRFGuard(cfg.MultiTenant)); err != nil {
 		logger.Error("caldav: init failed", "error", err)
 	} else {
 		calSvc.Register(cdav)
