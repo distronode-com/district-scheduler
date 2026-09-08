@@ -25,7 +25,7 @@ const postgresDSNEnv = "CALNODE_TEST_POSTGRES_DSN"
 // sanity check on the embedded set, not a property of PostgreSQL, so it moves with
 // every migration added — one named constant rather than the same literal in two
 // assertions, so adding one is a single edit that cannot be half-done.
-const knownMigrationCount = 62
+const knownMigrationCount = 63
 
 // openTestPostgres returns a handle scoped to a schema of its own, created for
 // this test and dropped when it finishes. A schema rather than a database because

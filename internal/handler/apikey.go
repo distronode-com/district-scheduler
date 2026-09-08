@@ -1,14 +1,60 @@
 package handler
 
 import (
-	"crypto/rand"
+	"context"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/calnode/calnode/internal/uid"
 )
+
+// keyExecer is the slice of *db.DB and *db.Tx that mintAPIKey needs.
+//
+// It exists because the two mints it replaced were on different receivers: CreateAPIKey
+// writes one row on the handle, and CreateWorkspace writes its key inside the transaction
+// that provisions the whole tenant. Taking an interface is what lets there be ONE
+// implementation of the key format rather than one per caller.
+type keyExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// mintAPIKey writes one api_keys row and returns its id and the plaintext key.
+//
+// ⛔ The single implementation of the credential format, deliberately. "cno_" + 32 random
+// bytes as hex, hashed with hashAPIKey (SHA-256) before storage, plaintext returned to the
+// caller exactly once and never stored. It was written out twice — once here, once in
+// CreateWorkspace — and a second copy of a credential format is how the two drift into
+// keys one code path can mint and another cannot verify.
+//
+// workspace_id is named rather than defaulted. On the platform handle the column default
+// resolves to the empty string and the row fails its foreign key; on a bound handle the
+// default resolves to the same value this names, so single-tenant and credential-scoped
+// callers write byte-identical rows to the ones they wrote before.
+//
+// managed marks a row the PLATFORM owns rather than the workspace. See migration 00063.
+//
+// now is passed in rather than read here so a caller writing several rows in one
+// transaction stamps them all with one timestamp, and so CreateAPIKey's response carries
+// the value that is actually in the row.
+func mintAPIKey(ctx context.Context, ex keyExecer, workspaceID, userID, name string, managed bool, now string) (id, plainKey string, err error) {
+	plainKey = "cno_" + hex.EncodeToString(mustRandom(32))
+	id = uid.New()
+	managedFlag := 0
+	if managed {
+		managedFlag = 1
+	}
+	if _, err := ex.ExecContext(ctx, `
+		INSERT INTO api_keys (id, workspace_id, user_id, name, key_hash, created_at, managed)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, workspaceID, userID, name, hashAPIKey(plainKey), now, managedFlag); err != nil {
+		return "", "", fmt.Errorf("mint api key: %w", err)
+	}
+	return id, plainKey, nil
+}
 
 // ListAPIKeys handles GET /v1/api-keys.
 func (h *Handler) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
@@ -69,22 +115,10 @@ func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		h.logger.ErrorContext(r.Context(), "create api key: rand", "error", err)
-		h.writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	plainKey := "cno_" + hex.EncodeToString(raw)
-	keyHash := hashAPIKey(plainKey)
-
-	keyID := uid.New()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-
-	if _, err := h.db.ExecContext(r.Context(), `
-		INSERT INTO api_keys (id, user_id, name, key_hash, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		keyID, user.ID, req.Name, keyHash, now); err != nil {
+	// managed = false: a key a member mints for themselves is theirs to list and delete.
+	keyID, plainKey, err := mintAPIKey(r.Context(), h.db, user.WorkspaceID, user.ID, req.Name, false, now)
+	if err != nil {
 		h.logger.ErrorContext(r.Context(), "create api key: insert", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "internal error")
 		return

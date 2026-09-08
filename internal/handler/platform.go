@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -155,7 +154,6 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plainKey := "cno_" + hex.EncodeToString(mustRandom(32))
 	ownerID := uid.New()
 	etID := uid.New()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -202,10 +200,14 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if _, err := tx.ExecContext(r.Context(), `
-		INSERT INTO api_keys (id, workspace_id, user_id, name, key_hash, created_at)
-		VALUES (?, ?, ?, 'platform-provisioned', ?, ?)`,
-		uid.New(), req.ID, ownerID, hashAPIKey(plainKey), now); err != nil {
+	// managed = 1: this key belongs to the platform, not to the owner it hangs off. It is
+	// what an integration on the other side of provisioning spends, and until 00063 the
+	// owner could delete it from the admin UI's API-keys page — one click, no warning, and
+	// the integration stops. Managed rows are hidden from GET /v1/api-keys and refused
+	// (403) by DELETE /v1/api-keys/{id}; RequireAuth still accepts them, and the platform
+	// can rotate or delete it through /v1/platform/workspaces/{id}/users/{uid}/api-keys.
+	_, plainKey, err := mintAPIKey(r.Context(), tx, req.ID, ownerID, "platform-provisioned", true, now)
+	if err != nil {
 		h.logger.ErrorContext(r.Context(), "platform: insert api key", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -247,9 +249,15 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 			fb, _ := json.Marshal(webhook.ValidFields(req.Defaults.Webhook.Fields))
 			fieldsJSON = string(fb)
 		}
+		// managed = 1 for the same reason the key above carries it: this subscription is
+		// the platform's, not the owner's. It is how the provisioning caller hears about
+		// every booking in the tenancy, and it hung off the owner user where the admin
+		// UI's webhooks page listed it with a delete button. Managed webhooks are hidden
+		// from GET /v1/webhooks and refused by PATCH/DELETE; the DELIVERY side
+		// (webhook.Service.Enqueue) is deliberately untouched and still finds them.
 		if _, err := tx.ExecContext(r.Context(), `
-			INSERT INTO webhooks (id, workspace_id, user_id, url, events, fields, secret_enc)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO webhooks (id, workspace_id, user_id, url, events, fields, secret_enc, managed)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
 			uid.New(), req.ID, ownerID, url, string(events), fieldsJSON, encSecret); err != nil {
 			h.logger.ErrorContext(r.Context(), "platform: insert webhook", "error", err)
 			h.writeError(w, http.StatusInternalServerError, "internal error")
