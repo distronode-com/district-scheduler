@@ -3,6 +3,7 @@ package config_test
 import (
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,6 +267,111 @@ func TestValidate_acceptsAPortAndATrailingSlash(t *testing.T) {
 	t.Setenv("FRAME_ANCESTORS", "https://console.example.test:8443 https://other.example.test/")
 	if err := config.Load().Validate(); err != nil {
 		t.Errorf("Validate() = %v; want nil", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PLATFORM_RETURN_ORIGINS
+// ---------------------------------------------------------------------------
+
+func TestLoad_platformReturnOriginsIsCommaSeparated(t *testing.T) {
+	t.Setenv("PLATFORM_RETURN_ORIGINS", " https://console.example.test , https://console.eu.example.test ")
+
+	cfg := config.Load()
+
+	if len(cfg.PlatformReturnOrigins) != 2 {
+		t.Fatalf("PlatformReturnOrigins = %#v; want 2 entries", cfg.PlatformReturnOrigins)
+	}
+	if cfg.PlatformReturnOrigins[0] != "https://console.example.test" ||
+		cfg.PlatformReturnOrigins[1] != "https://console.eu.example.test" {
+		t.Errorf("PlatformReturnOrigins = %#v; want the two origins trimmed and unchanged", cfg.PlatformReturnOrigins)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() = %v; want nil", err)
+	}
+}
+
+func TestLoad_platformReturnOriginsDefaultsToEmpty(t *testing.T) {
+	os.Unsetenv("PLATFORM_RETURN_ORIGINS")
+
+	cfg := config.Load()
+
+	if len(cfg.PlatformReturnOrigins) != 0 {
+		t.Errorf("PlatformReturnOrigins = %#v; want empty", cfg.PlatformReturnOrigins)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() = %v; want nil", err)
+	}
+}
+
+// A malformed entry does not fail closed on its own: it sits in the allowlist matching
+// nothing, every return_to is refused, and no response body says why. Refusing to boot is
+// the only outcome an operator cannot miss.
+func TestValidate_rejectsBadPlatformReturnOrigins(t *testing.T) {
+	cases := map[string]string{
+		"plain http on a public host": "http://console.example.test",
+		"no scheme":                   "console.example.test",
+		"wildcard host":               "https://*.example.test",
+		"with a path":                 "https://console.example.test/dashboard",
+		"with a trailing slash":       "https://console.example.test/",
+		"with a query":                "https://console.example.test?x=1",
+		"with a fragment":             "https://console.example.test#f",
+		"credentials":                 "https://user:pw@console.example.test",
+		"scheme only":                 "https://",
+		"a CSP keyword":               "'self'",
+		"not a URL at all":            "://",
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("PLATFORM_RETURN_ORIGINS", value)
+			if err := config.Load().Validate(); err == nil {
+				t.Errorf("Validate() = nil for %q; want an error", value)
+			}
+		})
+	}
+}
+
+// http is allowed for loopback only, so a developer can run the platform and this
+// scheduler on one laptop. A name that merely resolves to 127.0.0.1 is not loopback as far
+// as a config file is concerned.
+func TestValidate_platformReturnOriginsAcceptsLoopbackHTTPAndPorts(t *testing.T) {
+	for _, value := range []string{
+		"http://localhost:5173",
+		"http://127.0.0.1:3001",
+		"https://console.example.test:8443",
+		"http://localhost",
+	} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("PLATFORM_RETURN_ORIGINS", value)
+			if err := config.Load().Validate(); err != nil {
+				t.Errorf("Validate() = %v for %q; want nil", err, value)
+			}
+		})
+	}
+}
+
+// One bad entry beside a good one still fails: a half-applied allowlist is a policy nobody
+// wrote, and the half that survives is the permissive half.
+func TestValidate_platformReturnOriginsRejectsAListWithOneBadEntry(t *testing.T) {
+	t.Setenv("PLATFORM_RETURN_ORIGINS", "https://good.example.test,http://bad.example.test")
+	if err := config.Load().Validate(); err == nil {
+		t.Error("Validate() = nil; want an error naming the http entry")
+	}
+}
+
+// The error names the variable, because an operator reading a boot failure has several
+// origin lists to choose from.
+func TestValidate_platformReturnOriginsErrorNamesTheVariable(t *testing.T) {
+	t.Setenv("PLATFORM_RETURN_ORIGINS", "http://bad.example.test")
+	err := config.Load().Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil; want an error")
+	}
+	if !strings.Contains(err.Error(), "PLATFORM_RETURN_ORIGINS") {
+		t.Errorf("Validate() = %v; want it to name PLATFORM_RETURN_ORIGINS", err)
+	}
+	if !strings.Contains(err.Error(), "bad.example.test") {
+		t.Errorf("Validate() = %v; want it to quote the offending entry", err)
 	}
 }
 

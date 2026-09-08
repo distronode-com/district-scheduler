@@ -47,6 +47,28 @@ magic link), and every route says which of the two it uses.
 | `BASE_URL` | the identity host (below) |
 | `PUBLIC_BASE_URL` | **ignored**; each workspace's `public_host` replaces it |
 | `DATA_DIR` | where uploads (avatars, branding) are written; defaults to the relative `data`. A read-only image sets it to its mounted volume |
+| `PLATFORM_RETURN_ORIGINS` | comma-separated origins the calendar OAuth round trip may return the browser to. Unset ⇒ off, and a `return_to` is **refused**, not ignored |
+
+### `PLATFORM_RETURN_ORIGINS`
+
+A platform that has replaced the admin SPA with its own pages still sends the person through
+this instance for a calendar connection, because the OAuth redirect needs the session cookie
+that lives here. Without this setting the callback finishes on `/admin/calendar`, which is a
+page that platform no longer shows. Set it to the console's own origins
+(`https://console.example.com,https://console.eu.example.com`) and
+`GET /v1/calendar/connect?provider=…&return_to=…` will finish the round trip there instead,
+with `?calendar=connected` or `?calendar=error&reason=…`. Each entry is `scheme://host[:port]`
+with no path, query or fragment, `https` unless the host is `localhost`/`127.0.0.1`, and a
+malformed one is fatal at boot rather than a silently dead allowlist.
+
+The security rule is that the destination is only ever a value that came **out of the
+encrypted OAuth state**. `return_to` is checked against this list at connect time, by an
+authenticated request, and then carried inside the state the provider hands back; the callback
+never reads it from its own URL. The match is the whole origin compared byte for byte — a
+prefix match would accept `https://console.example.com.evil.test`, and an open redirect out of
+an OAuth callback is a better prize than most bugs in a scheduler. With the list empty, a
+`return_to` is a 400 rather than a no-op, so a platform pointed at an instance nobody
+configured for it finds out on the first attempt instead of on the landing page.
 
 ## The isolation model
 

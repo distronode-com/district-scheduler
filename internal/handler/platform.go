@@ -45,6 +45,17 @@ import (
 // Set once at boot from config, like SetSSOSecret, so there is no lock here.
 func (h *Handler) SetPlatformToken(token string) { h.platformToken = token }
 
+// SetPlatformReturnOrigins configures the origins a platform console may ask the calendar
+// OAuth round trip to return to (PLATFORM_RETURN_ORIGINS). Empty leaves the feature off,
+// and with it off a `return_to` is REFUSED rather than ignored — see returnToFromRequest.
+// Set once at boot from config, like SetPlatformToken, so there is no lock here.
+//
+// The slice is copied: config's is retained by the *config.Config the caller may keep,
+// and an allowlist that another package can append to is not an allowlist.
+func (h *Handler) SetPlatformReturnOrigins(origins []string) {
+	h.platformReturnOrigins = append([]string(nil), origins...)
+}
+
 // platformAuthorized gates every route in this file. It writes the response on failure
 // and reports whether the caller may proceed.
 func (h *Handler) platformAuthorized(w http.ResponseWriter, r *http.Request) bool {

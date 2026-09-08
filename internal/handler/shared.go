@@ -101,6 +101,13 @@ type shared struct {
 	// rather than just a tenant: with it unset every /v1/platform/* route 404s.
 	platformToken string
 
+	// platformReturnOrigins is PLATFORM_RETURN_ORIGINS: the origins a platform console
+	// may ask the calendar OAuth round trip to return the browser to. Process-wide and
+	// written once at boot, like the three below it — the allowlist identifies the
+	// PLATFORM that embeds this instance, which is not a per-workspace fact. Empty ⇒ the
+	// feature is off and a `return_to` is refused rather than ignored.
+	platformReturnOrigins []string
+
 	ssoSecret     string // HMAC key for the signed session hand-off; empty ⇒ /v1/auth/sso is off
 	metricsToken  string // bearer token for GET /metrics; empty ⇒ that endpoint 404s
 	sttBaseURLCfg string // STT_BASE_URL override; empty ⇒ stt.DefaultBaseURL (see sttBaseURL)

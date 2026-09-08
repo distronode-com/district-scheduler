@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -127,6 +128,26 @@ type Config struct {
 	// worth making them embeddable.
 	FrameAncestors []string
 
+	// PlatformReturnOrigins lists the origins a platform console may ask an OAuth round
+	// trip to come back to. Comma-separated absolute origins (`scheme://host[:port]`,
+	// no path, query or fragment). Empty (the default) ⇒ the feature is off and
+	// `?return_to=` is refused rather than ignored, so a platform that sends one against
+	// an instance that was never configured for it hears about it at the first attempt.
+	//
+	// It exists because a platform embedding this scheduler wants the person back on ITS
+	// page after connecting a calendar, and the callback otherwise lands on the operator's
+	// own console. The value is carried inside the ENCRYPTED OAuth state, so what the
+	// callback redirects to was chosen at connect time by an authenticated user and
+	// checked against this list then; nothing on the callback URL can steer it.
+	//
+	// The security rule is the same one FrameAncestors states: an entry must be
+	// `https://host[:port]` (plain http only for localhost/127.0.0.1, for a developer
+	// running both halves on a laptop), never a wildcard, and the match at connect time is
+	// the WHOLE origin, byte for byte. A prefix match would accept
+	// `https://console.example.com.evil.test`, and an open redirect out of an OAuth
+	// callback is worth more to an attacker than most bugs in this file.
+	PlatformReturnOrigins []string
+
 	// DemoMode turns this instance into a public, self-resetting demo: seeds sample
 	// data on every boot (there's no persistent volume, so every boot is a fresh DB),
 	// disables calendar/Zoom connect, serves a disallow-all robots.txt, and exposes
@@ -182,6 +203,9 @@ func Load() *Config {
 		// Space-separated, not comma: the value goes into a CSP source list verbatim, so
 		// it reads the same in the env var as it does in the header.
 		FrameAncestors: strings.Fields(getEnv("FRAME_ANCESTORS", "")),
+		// Comma-separated, unlike FRAME_ANCESTORS: these are URLs an operator pastes,
+		// not a CSP source list, so they follow TRUSTED_PROXY_CIDRS' shape.
+		PlatformReturnOrigins: splitCSV(getEnv("PLATFORM_RETURN_ORIGINS", "")),
 	}
 
 	cfg.EncryptionKey = os.Getenv("CALNODE_ENCRYPTION_KEY")
@@ -222,6 +246,15 @@ func (c *Config) Validate() error {
 	for _, origin := range c.FrameAncestors {
 		if err := validFrameAncestor(origin); err != nil {
 			return fmt.Errorf("FRAME_ANCESTORS: %w", err)
+		}
+	}
+
+	// Same family as the one above: a malformed entry here does not fail closed on its
+	// own. It sits in the allowlist matching nothing, so every return_to is refused and
+	// the platform's calendar connect looks broken for a reason no response body names.
+	for _, origin := range c.PlatformReturnOrigins {
+		if err := validReturnOrigin(origin); err != nil {
+			return fmt.Errorf("PLATFORM_RETURN_ORIGINS: %w", err)
 		}
 	}
 
@@ -355,6 +388,51 @@ func validFrameAncestor(origin string) error {
 		return fmt.Errorf("%q must be an origin, with no query or fragment", origin)
 	}
 	return nil
+}
+
+// validReturnOrigin checks one PLATFORM_RETURN_ORIGINS entry.
+//
+// The grammar is deliberately narrower than validFrameAncestor's: no CSP keywords (there
+// is nothing to say `'self'` about — a return_to to this instance's own host would be the
+// existing /admin redirect), and http is allowed for localhost only, because a developer
+// runs the platform and the scheduler on one laptop and there is no session to steal over
+// loopback. Everything else is refused for the same reason a frame-ancestor is: this list
+// is the ONLY thing standing between the OAuth callback and an open redirect, so a value
+// nobody can read exactly is a value that should not boot.
+func validReturnOrigin(origin string) error {
+	u, err := url.Parse(origin)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%q is not a URL: %w", origin, err)
+	case u.Host == "":
+		return fmt.Errorf("%q has no host; an entry is scheme://host[:port]", origin)
+	case u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Host)):
+		return fmt.Errorf("%q must use https:// (http:// only for localhost or 127.0.0.1)", origin)
+	case strings.Contains(u.Host, "*"):
+		return fmt.Errorf("%q must name one host, not a wildcard", origin)
+	case u.User != nil:
+		return fmt.Errorf("%q must not carry credentials", origin)
+	case u.Path != "":
+		// Not `!= "/"` as FrameAncestors allows: this value is compared to a request's
+		// origin, which never carries the trailing slash, so accepting one here would
+		// make an entry that matches nothing look correct.
+		return fmt.Errorf("%q must be an origin, with no path (not even a trailing slash)", origin)
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		return fmt.Errorf("%q must be an origin, with no query or fragment", origin)
+	}
+	return nil
+}
+
+// isLoopbackHost reports whether host (which may carry a port) is the loopback the
+// http:// exemption above is for. Named hosts other than "localhost" are not accepted
+// even when they resolve to 127.0.0.1: what a name resolves to is not a property of the
+// configuration file.
+func isLoopbackHost(host string) bool {
+	name := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		name = h
+	}
+	return name == "localhost" || name == "127.0.0.1" || name == "[::1]" || name == "::1"
 }
 
 func parseLogLevel(s string) slog.Level {
