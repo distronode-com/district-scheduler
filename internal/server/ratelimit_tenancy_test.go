@@ -145,7 +145,10 @@ func TestRateLimitKey_portIsNotPartOfTheBucket(t *testing.T) {
 	if bare != upper {
 		t.Errorf("keys differ by case: %q vs %q", bare, upper)
 	}
-	if bare != "book.acme.test|203.0.113.7" {
+	// ⚠️ The `ip:` namespace arrived with M2, which added a second kind of caller half.
+	// It is there so a credential hash can never collide with an address and so a key
+	// read out of a dump says which kind of caller it counts.
+	if bare != "book.acme.test|ip:203.0.113.7" {
 		t.Errorf("key = %q; want the workspace host and the client IP", bare)
 	}
 }

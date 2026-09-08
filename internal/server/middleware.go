@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -190,9 +191,11 @@ func PublicCORSFor(originsFor func(*http.Request) ([]string, bool)) func(http.Ha
 	}
 }
 
-// RateLimit returns middleware that allows limit requests per period per remote IP.
-// Exceeding the limit returns 429 with a Retry-After header. The IP is the TCP remote
-// address only — see remoteIP for why proxy headers are never trusted here.
+// RateLimit returns middleware that allows limit requests per period per bucket, and
+// rateLimitKey is what a bucket is: the remote IP in single-tenant mode, and
+// (workspace host, credential-or-IP) in multi-tenant mode. Exceeding the limit returns
+// 429 with a Retry-After header. The IP is the TCP remote address only — see remoteIP
+// for why proxy headers are never trusted here.
 //
 // The body is deliberately fixed English, even though the public booking form renders it
 // verbatim in its error slot. Translating it needs a locale, which this middleware has no
@@ -225,36 +228,93 @@ func RateLimit(limit int, period time.Duration) func(http.HandlerFunc) http.Hand
 
 // rateLimitKey is the bucket a request counts against (D14).
 //
-// ⛔ In multi-tenant mode it is (workspace, client IP), not the IP alone. Two
-// tenants' bookers routinely arrive from the same address — a shared office, a
-// corporate NAT, a CDN — and with one bucket the busier workspace would spend the
-// quieter one's allowance, which is one tenant degrading another's service through
-// no fault of either.
+// ⛔ In multi-tenant mode it is (workspace, caller), not the IP alone. Two tenants'
+// bookers routinely arrive from the same address — a shared office, a corporate NAT, a
+// CDN — and with one bucket the busier workspace would spend the quieter one's
+// allowance, which is one tenant degrading another's service through no fault of either.
 //
-// ⚠️ And the IP half has to be the RESOLVED client IP, not the peer, or the
-// workspace prefix makes things WORSE rather than better: behind a shared proxy
-// every request from a workspace would key on the proxy's address, so one workspace
-// would become one bucket and its first 20 bookers a minute would exhaust it for
-// everyone else in that tenant. TrustClientIP (TRUSTED_PROXY_CIDRS) is what makes
-// remoteIP the client's own address; without it configured, remoteIP is the peer and
-// the pair degrades to exactly the behaviour that existed before.
+// ⛔ AND THE CALLER HALF IS THE CREDENTIAL WHEN THERE IS ONE, NOT THE IP (M2). The
+// address is the right identity for an anonymous booker and the wrong one for an API
+// caller: the platform's dashboard reaches every tenant host from ONE egress IP per
+// region, so keyed on the address, an entire region's authenticated dashboard traffic
+// shared one 20-per-minute settings budget — and the busiest workspace in the region
+// would have spent it on everyone else, which is the exact failure the workspace prefix
+// was added to prevent, reappearing one dimension over.
 //
-// The workspace comes from the Host rather than from a resolved *Workspace, because
-// the limiter runs before any handler and must not do a database read to decide
-// whether to reject. An unrecognised host keys on the host string itself, which is
-// the safe direction: an attacker rotating Host values gets a bucket per value and
-// no tenant's allowance.
+// A SHA-256 prefix of the credential VALUE, because the limiter runs before RequireAuth
+// and must not do a database read to decide whether to reject: hashing what the request
+// already carries needs no lookup, and it keeps the raw bearer out of a map key that
+// outlives the request. The prefix is 16 hex characters — 64 bits, far past collision
+// for a per-process window map, and short enough that the key stays readable in a dump.
+//
+// ⚠️ It keys on the credential the caller PRESENTED, not on the user it resolves to. An
+// invalid key therefore gets its own bucket rather than falling in with the anonymous
+// ones, which is the safe direction (a rotated-key retry storm cannot spend a booker's
+// allowance) and the cheap one. Two live keys for one user are two budgets: they are two
+// callers, which is what the platform mints them as.
+//
+// ⚠️ The IP half — still used for anonymous requests — has to be the RESOLVED client IP,
+// not the peer, or the workspace prefix makes things WORSE: behind a shared proxy every
+// request from a workspace would key on the proxy's address, so one workspace would
+// become one bucket and its first 20 bookers a minute would exhaust it for everyone else
+// in that tenant. TrustClientIP (TRUSTED_PROXY_CIDRS) is what makes remoteIP the
+// client's own address; without it configured, remoteIP is the peer and that half
+// degrades to exactly the behaviour that existed before.
+//
+// The workspace comes from the Host rather than from a resolved *Workspace, for the same
+// no-database-read reason. An unrecognised host keys on the host string itself, which is
+// the safe direction: an attacker rotating Host values gets a bucket per value and no
+// tenant's allowance.
 func rateLimitKey(r *http.Request) string {
-	ip := remoteIP(r)
 	if !multiTenantLimits {
-		return ip
+		// Single-tenant is byte-for-byte what it always was: one instance, one
+		// operator, and no fleet of origins sharing an egress address.
+		return remoteIP(r)
 	}
 	host := strings.ToLower(r.Host)
 	if i := strings.LastIndexByte(host, ':'); i >= 0 && !strings.Contains(host[i+1:], ".") {
 		host = host[:i]
 	}
-	return host + "|" + ip
+	if cred := requestCredential(r); cred != "" {
+		return host + "|c:" + hashCredential(cred)
+	}
+	// The two halves are namespaced so a hash can never collide with an address, and
+	// so a key read out of a heap dump says which kind of caller it counts.
+	return host + "|ip:" + remoteIP(r)
 }
+
+// requestCredential returns the credential value a request carries, or "" when it
+// carries none.
+//
+// The three RequireAuth accepts, in its own order: an X-API-Key header, an
+// `Authorization: Bearer` value, and the session cookie. Order matters only for a
+// request carrying two, and matching RequireAuth's precedence means the limiter and the
+// authenticator agree on who the caller is.
+func requestCredential(r *http.Request) string {
+	if k := strings.TrimSpace(r.Header.Get("X-API-Key")); k != "" {
+		return k
+	}
+	if a := strings.TrimSpace(r.Header.Get("Authorization")); len(a) > 7 && strings.EqualFold(a[:7], "bearer ") {
+		if v := strings.TrimSpace(a[7:]); v != "" {
+			return v
+		}
+	}
+	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
+		return c.Value
+	}
+	return ""
+}
+
+// hashCredential is the 64-bit prefix of the credential's SHA-256, hex encoded.
+func hashCredential(cred string) string {
+	sum := sha256.Sum256([]byte(cred))
+	return hex.EncodeToString(sum[:8])
+}
+
+// sessionCookieName duplicates internal/handler's constant rather than importing it:
+// internal/server already imports internal/handler, and the reverse edge does not exist.
+// SameOriginCheck above spells the same literal for the same reason.
+const sessionCookieName = "calnode_session"
 
 // multiTenantLimits mirrors config.MultiTenant. It is a package variable rather than
 // a parameter because RateLimit is called ~15 times at registration and every caller
