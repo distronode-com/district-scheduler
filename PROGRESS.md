@@ -2401,3 +2401,86 @@ next reader's wrong answer. Two of its three points survived contact unchanged (
 change, and the `<nonce>|<wid>` state cookie). The third did not — it had the SSO endpoint
 resolving its workspace from `wid`, and doing that on a public host is exactly what part three
 had to fix.
+
+---
+
+## `return_to` on the calendar OAuth round trip (`feat/calendar-return-to`)
+
+A platform that has replaced the `/admin/` SPA with its own pages still sends the person
+through this instance to connect a calendar: the OAuth redirect needs the session cookie
+that lives here. The callback then finished on `scoped.publicURL()+"/admin/calendar"`, a
+page that platform does not show, and answered every failure as JSON at a URL the browser
+is looking at. `GET /v1/calendar/connect?provider=…&return_to=…` now names where the round
+trip should end instead.
+
+**No new routes.** `179 routes: 31 host-scoped, 107 credential-scoped, 33 platform, 8
+allowlisted`, unchanged — this is two existing handlers and one env var, and
+`routes_classified_test.go` is green without an edit.
+
+### The contract
+
+| | |
+|---|---|
+| connect | `GET /v1/calendar/connect?provider=<name>&return_to=<absolute URL>` |
+| refused | `400 {"error":"return_to origin not allowed"}` |
+| success | `302 <return_to>?calendar=connected` |
+| failure | `302 <return_to>?calendar=error&reason=<code>` |
+| codes | `provider_denied`, `missing_code`, `exchange_failed`, `invalid_state` |
+| config | `PLATFORM_RETURN_ORIGINS`, comma-separated `scheme://host[:port]` |
+
+With `PLATFORM_RETURN_ORIGINS` unset the parameter is refused and everything else is
+byte-for-byte what it was: the JSON errors, the `/admin/calendar?connected=true` redirect,
+and the two-field state.
+
+### Three decisions, and why each is the one that was taken
+
+⛔ **Off means REFUSED, not ignored.** A `return_to` against an instance nobody configured
+is a 400 at the first attempt. Ignoring it would land the person on this instance's
+`/admin/calendar` and present as a bug on the platform's side, in the one place where
+nobody is watching a log.
+
+⛔ **The destination only ever comes out of the CIPHERTEXT.** The origin is checked against
+the allowlist at CONNECT time, on an authenticated request, and the accepted value travels
+inside the encrypted state. The callback is a public route, so a `return_to` on its own
+query is attacker-controlled and is ignored — and a state that does not decrypt has no
+trustworthy destination at all, so it answers today's JSON rather than the query's
+suggestion. Both have their own test. The match is the whole origin, byte for byte: a
+prefix comparison accepts `https://console.example.com.evil.test`, and an open redirect out
+of an OAuth callback is a better prize than most bugs in a scheduler.
+
+⚠️ **The state's third field is written only when it is non-empty**, rather than always
+emitting `provider\x1fuserID\x1f`. The parse side takes at most two separators and treats
+one, two and three fields alike, so a round trip in flight when the deploy lands still
+completes — but the OTHER direction of a rolling deploy is the reason: an older binary
+parses with a single `strings.Index` and would read a trailing separator as part of the
+user id, exchanging against a user that does not exist. A `return_to` containing the
+separator is refused before it is encoded (`url.Parse` rejects ASCII control characters
+anyway, so the explicit guard has its own test rather than resting on that accident).
+
+### The ordering that is easy to get wrong
+
+The `?error=` branch had to move after the decryption — a denied consent with a
+`return_to` has to go home rather than answer JSON — but it is handled **before** the
+state is judged invalid. A denial arrives with no state at all when the user clicks
+Cancel, and today's answer to that is `OAuth error: access_denied`, not `invalid or
+missing state`. Moving the branch to the end of the decrypt block changes it silently;
+both directions are pinned.
+
+### What the tests run against
+
+A **stub provider**, not `gcal`: the failure this feature is mostly about is a failed token
+exchange, and `gcal.Exchange` is an HTTP POST to Google. It keeps the real AES-GCM
+`EncryptState`/`DecryptState` (a `caldav.Client` needs no OAuth app to construct), so every
+state assertion goes through the real crypto rather than the encoder alone.
+
+⛔ **The multi-tenant half asserts the ROW, not the redirect** (`TestPostgres_*` in
+`calendar_tenancy_test.go`, through `h.Platform(…)` because the wrapper is the shape under
+test). A 302 looks identical whether the exchange ran on the workspace's bound handle or on
+the unbound platform one and wrote nothing. It caught two real failures during development
+— and the second is worth writing down: `calendar_connections.provider` carries
+`CHECK (provider IN ('google','microsoft','caldav'))`, so a stub under an invented name is
+refused by the database and the callback reports `exchange_failed`, which reads exactly
+like the bug the test exists to find.
+
+Gates: `gofmt -l ./internal ./cmd` clean, `go vet ./...`, `go build ./...`,
+`go test ./...` on SQLite, and the handler/config/server packages on PostgreSQL.
