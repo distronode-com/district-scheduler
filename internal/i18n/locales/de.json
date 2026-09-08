@@ -154,5 +154,9 @@
   "assistant_iteration_cap": "Machen wir es einfach: Bitte wählen Sie einen Termin im Kalender unten.",
   "assistant_status_slots": "Verfügbarkeit wird geprüft…",
   "assistant_status_book": "Wird gebucht…",
-  "assistant_status_working": "Wird bearbeitet…"
+  "assistant_status_working": "Wird bearbeitet…",
+
+  "index_title": "Meeting buchen",
+  "index_intro": "Wählen Sie eine Meeting-Art, um verfügbare Zeiten zu sehen.",
+  "index_none": "Derzeit stehen keine Meetings zur Buchung bereit."
 }

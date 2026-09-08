@@ -750,9 +750,20 @@ func New(ctx context.Context, cfg *config.Config, db *db.DB, logger *slog.Logger
 	// permanently if a marketing landing page is ever added here.
 	adminRoot := http.Handler(http.RedirectHandler("/admin/", http.StatusFound))
 
+	// tenantIndex is the bare root with the console off: the workspace's public, active
+	// event types, linked to their booking pages, on the booking surfaces' own stylesheet
+	// (M9). It replaces a bare 404 — trimming a booking link back to the domain is a thing
+	// people do, and answering nothing there reads as a broken host.
+	//
+	// ⛔ Host-scoped, like every other public surface: the list is one workspace's, and on
+	// an unrecognised host Scoped answers the unknown-host 404 before this handler runs.
+	// That distinction is the reason an empty workspace still renders the page — "no such
+	// host" and "nothing to book here" are different answers and the visitor needs both.
+	tenantIndex := http.Handler(h.Scoped(handler.HostWorkspace, (*H).TenantIndex))
+
 	// ADMIN_SPA=off on a multi-tenant instance: the platform's own console is the
-	// admin UI, so these three answer 404 instead. The HANDLERS change and the
-	// registrations do not, deliberately —
+	// admin UI, so the two /admin paths answer 404 instead and the root becomes the
+	// tenant index. The HANDLERS change and the registrations do not, deliberately —
 	//
 	//   - the classification gate reads this file, and a route that disappears in one
 	//     configuration is a route no gate can classify;
@@ -762,11 +773,16 @@ func New(ctx context.Context, cfg *config.Config, db *db.DB, logger *slog.Logger
 	//   - /favicon.ico and the whole /v1 tree are registered elsewhere and untouched.
 	//     The console is removed, not the instance's public surface.
 	//
+	// ⚠️ The root is the one that is not a 404, and that is the M9 change: it used to be,
+	// and a tenant host whose root says nothing reads as a broken host to anyone who
+	// trims a booking link. The two /admin paths stay 404 — there is no console to reach.
+	//
 	// Single-tenant is never switched off (config.AdminSPAEnabled): the operator would
 	// have no admin UI at all.
 	if !cfg.AdminSPAEnabled() {
 		notFound := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
-		adminIndex, adminTree, adminRoot = notFound, notFound, notFound
+		adminIndex, adminTree = notFound, notFound
+		adminRoot = tenantIndex
 	}
 
 	mux.Handle("GET /admin", adminIndex)

@@ -44,7 +44,11 @@ var unscopedAllowlist = map[string]string{
 	"GET /favicon.ico": "embedded static asset",
 	"GET /admin":       "redirect to /admin/",
 	"/admin/":          "embedded admin SPA (static bytes, same for every tenant)",
-	"GET /{$}":         "redirect to /admin/",
+	// The bare root holds one of two handlers chosen at boot: the redirect to /admin/,
+	// or — with the console off — the host-scoped tenant index. Allowlisted rather than
+	// classified because the REGISTRATION names a variable, which is the same reason
+	// /admin and /admin/ are here: this scan reads the text of the line.
+	"GET /{$}": "redirect to /admin/, or the host-scoped tenant index with the console off",
 	// The MCP mount is a *mcp.Server behind two middlewares, not a handler
 	// method. Its tenant comes from the bearer credential, resolved by
 	// MCPCallerMiddleware and applied by MCPServerForRequest — which is asserted

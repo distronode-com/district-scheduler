@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="{{.Locale}}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+{{/* Unconditional, unlike the booking pages' demo-only noindex: this page is a LIST of
+     what a workspace has published, and indexed it becomes a directory of the operator's
+     tenants and their meeting types assembled by someone else. The booking pages it links
+     to are individually indexable and stay that way — a link a workspace hands out is
+     meant to be found; the index of them is not. */}}
+<meta name="robots" content="noindex">
+<title>{{call .T "index_title"}}{{if .BusinessName}} — {{.BusinessName}}{{end}}</title>
+<link rel="stylesheet" href="/booking.css?v={{.CSSVersion}}">
+<style>
+{{template "districtTheme" .}}
+
+/* Page chrome ONLY. Everything with a look — the card, the token palette, the .slot-btn
+   box, the footer — comes from /booking.css and the shared partials above, so this page
+   cannot drift from the booking and manage surfaces it sits in front of. What is left
+   here is what booking.css deliberately does not own (body background, per-page
+   responsive) plus the two rules that make a .slot-btn work as an <a>. */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  background: var(--bk-page-bg);
+  color: var(--bk-fg);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2.5rem 1rem 2rem;
+  gap: 1.25rem;
+}
+
+/* .slot-btn is authored for a <button>: centred text, no anchor reset. As a link it
+   needs its underline removed and its two lines laid out — the name reads first, the
+   duration and location sit beside it as the secondary line. Nothing about the box,
+   the border, the radius or the hover is restated. */
+.index-link {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  text-align: left;
+  text-decoration: none;
+}
+.index-link .index-name { font-weight: 600; }
+.index-link .index-meta { font-size: .8125rem; color: var(--bk-muted); white-space: nowrap; }
+
+/* The list. NOT booking.css's .slots-list, which caps its height at 340px and scrolls —
+   correct for a slot picker inside a card column, wrong for the only content on a page,
+   where it would hide a workspace's later event types behind an inner scrollbar. */
+.index-list { display: flex; flex-direction: column; gap: .5rem; }
+.index-intro { margin-bottom: 1rem; }
+
+/* ── Mobile ──────────────────────────────────────── */
+/* Same treatment as book.html at the same breakpoint: the card goes full-bleed. The
+   meta line wraps under the name rather than squeezing, because an event type's name is
+   the part worth reading on a phone. */
+@media (max-width: 700px) {
+  body { padding: 0 0 1.5rem; gap: 1rem; }
+  .card { border-radius: 0; box-shadow: none; width: 100%; }
+  .right-col { padding: 1.25rem 1rem; }
+  .index-link { flex-direction: column; align-items: flex-start; gap: .25rem; }
+  .index-link .index-meta { white-space: normal; }
+}
+</style>
+</head>
+<body>
+
+{{if or .LogoURL .BusinessName}}
+<header style="text-align:center;padding:24px 16px 4px;">
+  {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.BusinessName}}" style="height:{{.LogoHeight}}px;width:auto;max-width:100%;opacity:{{.LogoOpacity}};display:inline-block;border:0;">{{else}}<span style="font-size:.9375rem;font-weight:600;color:var(--bk-fg);">{{.BusinessName}}</span>{{end}}
+</header>
+{{end}}
+
+{{if .BannerURL}}
+<img class="brand-banner" src="{{.BannerURL}}" alt="" style="opacity:{{.BannerOpacity}};">
+{{end}}
+
+{{/* <main class="card"> for the same reason book.html does it: the card is the flex item
+     of the body's column layout, and an extra wrapper would become that item and change
+     the box. One column here — there is no info panel to sit beside. */}}
+<main class="card">
+  <div class="right-col">
+    <h1 class="slots-header">{{call .T "index_title"}}</h1>
+    {{if .EventTypes}}
+    <p class="hint index-intro">{{call .T "index_intro"}}</p>
+    <div class="index-list">
+      {{range .EventTypes}}
+      <a class="slot-btn index-link" href="/book/{{.Slug}}">
+        <span class="index-name">{{.Name}}</span>
+        <span class="index-meta">{{.DurationLabel}}{{if .LocationLabel}} · {{.LocationLabel}}{{end}}</span>
+      </a>
+      {{end}}
+    </div>
+    {{else}}
+    {{/* A workspace with nothing public gets the same page and one sentence. A 404 here
+         would say "no such host", which is a different and wrong answer. */}}
+    <p class="hint">{{call .T "index_none"}}</p>
+    {{end}}
+  </div>
+</main>
+
+{{template "legalFooter" .}}
+
+</body>
+</html>

@@ -29,46 +29,7 @@
 {{end}}
 <link rel="stylesheet" href="/booking.css?v={{.CSSVersion}}">
 <style>
-/* ── Distronode theme ────────────────────────────────
-   Re-declares the tokens from /booking.css so the HOSTED pages carry the
-   distronode.com palette: cool off-white ground, near-black cool text, and the
-   site's indigo as the single accent (the neutral sheet uses ink for both text
-   and buttons; the site splits them).
-
-   ⛔ SCOPED TO THIS PAGE ON PURPOSE. The embed widget on a customer's own site
-   loads the same /booking.css and must NOT pick this up — their booking widget
-   should sit in their design, not ours. It never sees this block: it lives in
-   the page <style>, not the shared sheet, and custom properties reach a widget
-   only from ITS host page. Anything added here that the widget should also get
-   belongs in booking.css instead.
-
-   Source of truth is distronode-website/src/app/globals.css; values are its HSL
-   tokens converted to hex. Deliberately NOT the email letterhead, which is a
-   different, warmer treatment for transactional mail. */
-:root {
-  --bk-fg: #14141a;
-  --bk-fg-2: #393946;
-  --bk-body: #4b4b58;
-  --bk-muted: #60606c;
-  /* #8b8b9c until F3b, which is 3.35:1 on the card's #fff — a serious axe contrast
-     finding on .ch / .tz-label / .hint / .scheduled-label / .row-label, all 11px
-     copy. #6e6e7c measures 5.02:1 on #fff, 4.89:1 on --bk-elevated and 4.77:1 on
-     --bk-page-bg, and stays a visible step lighter than --bk-muted (6.20:1).
-     Computed from the hex values, not judged by eye. The matching floor and the
-     reasoning live on the token in booking.css. */
-  --bk-subtle: #6e6e7c;
-  --bk-border: #e0e0e6;
-  --bk-border-strong: #c6c6d2;
-  --bk-surface: #f3f3f7;
-  --bk-elevated: #fcfcfd;
-  --bk-card: #ffffff;
-  --bk-primary: #3f36e2;
-  --bk-primary-hover: #2c24cc;
-  --bk-on-primary: #ffffff;
-  --bk-focus-ring: rgba(63,54,226,.18);
-  --bk-danger: #d32222;
-  --bk-page-bg: #f9f9fb;
-}
+{{template "districtTheme" .}}
 
 /* Page chrome + manage-specific views (booking details, reschedule confirm, state
    pages). Card / calendar / slots / form visual primitives come from the shared

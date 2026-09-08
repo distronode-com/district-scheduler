@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/calnode/calnode/internal/config"
+	"github.com/calnode/calnode/internal/db"
 	"github.com/calnode/calnode/internal/dbtest"
 )
 
@@ -28,16 +29,25 @@ import (
 // package, which is the shape ratelimit_tenancy_test.go already guards against.
 func newAdminMux(t *testing.T, cfg *config.Config) http.Handler {
 	t.Helper()
+	mux, _ := newAdminMuxDB(t, cfg)
+	return mux
+}
+
+// newAdminMuxDB is newAdminMux with the database handle, for a case that has to seed
+// rows the mux will read back (the tenant index).
+func newAdminMuxDB(t *testing.T, cfg *config.Config) (http.Handler, *db.DB) {
+	t.Helper()
 
 	previous := multiTenantLimits
 	t.Cleanup(func() { SetMultiTenantLimits(previous) })
 
+	database := dbtest.Open(t)
 	// The worker's context is cancelled before drain, which blocks until the worker
 	// finishes its current cycle; the other order hangs with a green test body.
 	workerCtx, stopWorker := context.WithCancel(context.Background())
-	mux, drain := New(workerCtx, cfg, dbtest.Open(t), slog.New(slog.DiscardHandler))
+	mux, drain := New(workerCtx, cfg, database, slog.New(slog.DiscardHandler))
 	t.Cleanup(func() { stopWorker(); drain() })
-	return mux
+	return mux, database
 }
 
 func getAdminPath(t *testing.T, mux http.Handler, path string) *httptest.ResponseRecorder {
@@ -88,7 +98,14 @@ func TestAdminSPA_offInMultiTenantModeIs404(t *testing.T) {
 	// The sub-path matters on its own: /admin/ is the SPA fallback, so every
 	// client-side route in the console resolves through it. If only the shell 404'd,
 	// a deep link would still serve the app.
-	for _, path := range []string{"/admin", "/admin/", "/admin/bookings", "/admin/settings/video", "/"} {
+	//
+	// ⚠️ "/" IS NOT IN THIS LIST ANY MORE, and it was until M9. It answered a bare 404,
+	// which is the wrong answer on a tenant's own public host: it is not that the path
+	// does not exist, it is that the console that used to live there does not. The root
+	// now serves the tenant index — see TestTenantIndex_* below and, on this mux, the
+	// unknown-host case in this file's neighbour, since httptest's default Host names
+	// no workspace.
+	for _, path := range []string{"/admin", "/admin/", "/admin/bookings", "/admin/settings/video"} {
 		t.Run(path, func(t *testing.T) {
 			rec := getAdminPath(t, mux, path)
 			if rec.Code != http.StatusNotFound {

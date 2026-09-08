@@ -154,5 +154,9 @@
   "assistant_iteration_cap": "Laten we het simpel houden: kies een tijd in de agenda hieronder.",
   "assistant_status_slots": "Beschikbaarheid controleren…",
   "assistant_status_book": "Boeken…",
-  "assistant_status_working": "Bezig…"
+  "assistant_status_working": "Bezig…",
+
+  "index_title": "Een afspraak boeken",
+  "index_intro": "Kies een type afspraak om de beschikbare tijden te zien.",
+  "index_none": "Er zijn op dit moment geen afspraken beschikbaar om te boeken."
 }

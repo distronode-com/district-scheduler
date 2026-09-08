@@ -154,5 +154,9 @@
   "assistant_iteration_cap": "Semplifichiamo: scelga un orario dal calendario qui sotto.",
   "assistant_status_slots": "Verifica della disponibilità…",
   "assistant_status_book": "Prenotazione in corso…",
-  "assistant_status_working": "Elaborazione…"
+  "assistant_status_working": "Elaborazione…",
+
+  "index_title": "Prenota una riunione",
+  "index_intro": "Scegli un tipo di riunione per vedere gli orari disponibili.",
+  "index_none": "Al momento non ci sono riunioni disponibili per la prenotazione."
 }

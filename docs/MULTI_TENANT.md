@@ -90,11 +90,28 @@ which is the safe direction. The boot log names the list when it is in use, so "
 
 A platform whose own console already has every admin surface does not want a second,
 parallel one on each tenant host. `ADMIN_SPA=off` answers **404** on `GET /admin`,
-`GET /admin/` and every path under it, and on the bare-root redirect `GET /{$}` that
-leads there. Nothing else moves: `/favicon.ico`, the public booking pages, the embed
-widget, the LiveKit room and the whole `/v1` tree are untouched, and the routes stay
-**registered** — the 404 is served through the same middleware chain as every other
-response, so request ids, logging and the security headers are unchanged.
+`GET /admin/` and every path under it. Nothing else moves: `/favicon.ico`, the public
+booking pages, the embed widget, the LiveKit room and the whole `/v1` tree are untouched,
+and the routes stay **registered** — the 404 is served through the same middleware chain
+as every other response, so request ids, logging and the security headers are unchanged.
+
+⚠️ **The bare root is the exception, and it changed in M9.** `GET /{$}` used to redirect
+to `/admin/`, so with the console off it was a bare 404 — on a tenant's own public host,
+where a 404 says "no such path" and what is true is "the console that used to be here is
+gone". Trimming a booking link back to the domain is a thing people do, and it read as a
+broken host. The root now serves a **neutral index**: the workspace's public, active event
+types, each linking to `/book/<slug>`, on the booking pages' own stylesheet and branding,
+translated through the same plumbing, `noindex`, under the strict public CSP. A workspace
+with nothing public gets the same page and one sentence — an empty workspace is not a
+missing one, and the unknown-host 404 (which still fires, in `Scoped`, before the handler
+runs) already carries that other answer. It lists nothing the booking pages do not already
+publish to the same audience: no host names, no descriptions, no counts.
+
+⛔ **No route was added or removed.** `GET /{$}` is the same registration; only the handler
+behind it changes, and the classification totals still read **184 routes — 30 host-scoped,
+108 credential-scoped, 38 platform, 8 allowlisted**. With the console **on**, in either
+mode, the root is the redirect to `/admin/` it has always been, and a single-tenant
+instance never reaches the index at all because `ADMIN_SPA=off` is ignored there.
 
 Values are `on` and `off` only. `true`/`false` are refused at boot, along with anything
 else that is neither: the fallback is `on`, so a value nobody can read exactly would
@@ -561,6 +578,44 @@ and nothing is disclosed either way. Single-tenant keeps the original verify-the
 | **the OAuth app credentials** | Google/Microsoft client id and secret identify the *instance* to the provider, not the tenant |
 | **rate-limit windows** | keyed `(workspace, credential-or-client-IP)` — see [Rate-limit buckets](#rate-limit-buckets) — but the counters live in one process |
 | **retention sweeps** | expired sessions, tokens and deliveries are purged globally: they are retention rules, not tenant logic |
+| **the security headers** | `nosniff`, `Referrer-Policy`, `Permissions-Policy` and conditional HSTS are set at the mux root for every response — see below. They describe the browser's relationship with this origin, which is a property of the deployment, not of the tenant whose host it happens to be |
+
+## Response headers
+
+Every response from this instance carries four headers, set by one middleware at the mux
+root (M9) rather than by the handlers — which is where they used to live, so `/embed.js`,
+`/booking.css`, every JSON error and every 404 carried none at all:
+
+| header | value |
+|---|---|
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains`, **only** on a request that arrived over TLS |
+
+Two exceptions, both deliberate:
+
+- **The LiveKit room** (`/room/…`) gets `camera=(self), microphone=(self), geolocation=()`.
+  It is a video meeting, and a Permissions-Policy denial cannot be recovered from in
+  JavaScript — `getUserMedia` simply rejects.
+- **A handler that sets one of these keys keeps its own value.** The middleware sets before
+  calling through, so the room's `Referrer-Policy: no-referrer` survives, and so does
+  anything a future surface tightens.
+
+⛔ **HSTS is conditional on the request scheme** — a real TLS connection, or
+`X-Forwarded-Proto: https` from the terminating proxy. Never on plain http: this binary is
+also run by self-hosters on a LAN, and an accidental `includeSubDomains` pinned against a
+hostname reachable only over http locks that operator out of their own installation for a
+year with nothing to retract it with. The forwarded header is believed without consulting
+`TRUSTED_PROXY_CIDRS`, unlike the rate limiter's client IP: forging it yields an HSTS
+header that browsers honour only over https, i.e. only where it was true anyway, and
+requiring the allowlist would leave HSTS off on every deployment that has not set one.
+
+The public booking pages additionally set their own `Content-Security-Policy` and
+`X-Frame-Options: DENY` — those are per surface and unchanged. The strict policy now
+carries `'self'` in `script-src`, which it did not before M9: without it every same-origin
+script was refused, which is why Cloudflare's injected
+`/cdn-cgi/challenge-platform/scripts/jsd/main.js` was a console error on every booking page.
 
 ## Operator checklist
 

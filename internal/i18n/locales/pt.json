@@ -154,5 +154,9 @@
   "assistant_iteration_cap": "Vamos simplificar: escolha um horário no calendário abaixo.",
   "assistant_status_slots": "A verificar a disponibilidade…",
   "assistant_status_book": "A marcar…",
-  "assistant_status_working": "A processar…"
+  "assistant_status_working": "A processar…",
+
+  "index_title": "Marcar uma reunião",
+  "index_intro": "Escolha um tipo de reunião para ver os horários disponíveis.",
+  "index_none": "De momento não há reuniões disponíveis para marcação."
 }

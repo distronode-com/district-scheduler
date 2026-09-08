@@ -161,5 +161,9 @@
   "assistant_iteration_cap": "Vamos a simplificarlo: elige un horario en el calendario de abajo.",
   "assistant_status_slots": "Comprobando disponibilidad…",
   "assistant_status_book": "Reservando…",
-  "assistant_status_working": "Trabajando…"
+  "assistant_status_working": "Trabajando…",
+
+  "index_title": "Reservar una reunión",
+  "index_intro": "Elige un tipo de reunión para ver los horarios disponibles.",
+  "index_none": "Ahora mismo no hay reuniones disponibles para reservar."
 }

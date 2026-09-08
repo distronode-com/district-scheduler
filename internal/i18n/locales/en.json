@@ -161,5 +161,9 @@
   "assistant_iteration_cap": "Let's keep it simple — please pick a time from the calendar below.",
   "assistant_status_slots": "Checking availability…",
   "assistant_status_book": "Booking…",
-  "assistant_status_working": "Working…"
+  "assistant_status_working": "Working…",
+
+  "index_title": "Book a meeting",
+  "index_intro": "Choose a meeting type to see available times.",
+  "index_none": "There are no meetings available to book right now."
 }
