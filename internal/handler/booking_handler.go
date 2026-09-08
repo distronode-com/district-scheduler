@@ -1193,7 +1193,20 @@ func (h *Handler) dispatchBookingConfirmation(b *booking.Booking, in bookingConf
 	}
 }
 
-// GetBooking handles GET /v1/bookings/{id} (public — accessible with just the booking ID).
+// GetBooking handles GET /v1/bookings/{id} (admin — RequireAuth + CredentialWorkspace).
+//
+// ⛔ It was public until F4, with the booking id as the entire capability. The scoping
+// is what produces the cross-workspace 404: the handle is bound to the caller's
+// credential's workspace, so another workspace's id is a row that does not exist rather
+// than a predicate this handler has to remember to write.
+//
+// ⚠️ Residual, stated rather than fixed here: it carries no per-user check, so any
+// authenticated member of the workspace can read any of its bookings by id. Its
+// siblings are not uniform on that point — GetBookingAnswers and RescheduleBooking
+// are host-only, CancelBooking is admin-or-host, GetBookingNotes is deliberately
+// admin-wide (see its comment and audit/claims.yaml) — so narrowing this one is an
+// access-model decision that would want the MCP get_booking tool moved with it. F4
+// closes the unauthenticated hole and changes nothing else.
 func (h *Handler) GetBooking(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	b, err := h.bookingSvc.Get(r.Context(), id)

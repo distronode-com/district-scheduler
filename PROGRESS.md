@@ -841,6 +841,12 @@ page may depend on is a product decision, not a tenancy one. What multi-tenancy
 changes is the blast radius — it is now bounded to one workspace instead of the
 whole instance.
 
+✅ **CLOSED by F4** — the product decision was taken and the route is now
+`h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetBooking))`. The
+premise the paragraph above deferred on ("a route the booking page may depend on")
+was checked rather than assumed and is false: nothing public reads it. See the F4
+section at the end of this file.
+
 ### Gates
 
 `gofmt -l .` empty, `go vet ./...` clean, `go build ./...` clean.
@@ -864,6 +870,12 @@ Eight assertions, each in both directions:
 | `POST /v1/bookings` (public write) | lands in `acme` | B's count unmoved |
 | MCP `list_bookings` over the HTTP transport | ✓ | ✓ (both directions) |
 | A's API key on B's host | — | **403 `workspace mismatch`** |
+
+⚠️ **The `GET /v1/bookings/{id}` row is as written at D-time and its left column has
+since changed meaning.** That 200 was an ANONYMOUS request on A's public host — the
+route carried no auth middleware. Since F4 it is 401 without a credential and 200 with
+A's own key; the 404 in the right column is unaffected, because it was always the
+scoping rather than the auth that produced it.
 
 The MCP call is a real `tools/call` through `mcp.StreamableClientTransport`
 against an `httptest.Server`, with the `cno_` key as a bearer token. It is
@@ -2484,3 +2496,81 @@ like the bug the test exists to find.
 
 Gates: `gofmt -l ./internal ./cmd` clean, `go vet ./...`, `go build ./...`,
 `go test ./...` on SQLite, and the handler/config/server packages on PostgreSQL.
+
+## F4 — `GET /v1/bookings/{id}` requires a credential
+
+The last route under `/v1/bookings/` that anyone could call. It was
+`h.Scoped(handler.HostWorkspace, (*H).GetBooking)` with no `RequireAuth`, so reaching a
+tenant's public host and holding a booking id was the whole capability, and the body it
+returns is the attendee's name, email and intake answers. D-era work bounded the blast
+radius to one workspace (the section above) and deferred closing it, on the premise that
+the booking page might depend on it.
+
+### The premise was checked, not assumed
+
+`grep -rn "/v1/bookings/"` over `frontend/src`, `internal/handler/templates` and
+`internal/handler/*.go`. Every hit, and why none is public:
+
+- `frontend/src/routes/{bookings,members,recordings}/+page.svelte` — nine hits, all
+  **sub-paths** (`/answers`, `/cancel`, `/reschedule`, `/reassign`, `/notes`,
+  `/notes/regenerate`, `/transcript`) and all from the admin SPA, which sends a
+  credential on every call. None is the bare `{id}` read.
+- `internal/handler/templates/book.html:665` and `internal/handler/embed.js:533` — both
+  are `POST /v1/bookings`, the public create, untouched here. **Neither follows it with
+  a read**: the confirmation view is rendered from the POST response body, which is
+  exactly why closing the GET is invisible to the booker.
+- `internal/handler/templates/manage.html` — no hit at all. The cancel/reschedule links
+  in the four emails land on `/manage/{token}`, and the page calls
+  `/manage/{token}/{reschedule,cancel}` plus the public slots endpoint. A separate
+  token-bearing surface, as documented.
+- `internal/handler/embed.js`'s `api()` helper is the only other way the widget can
+  fetch, and its three call sites are `/public`, `/questions` and `/slots`.
+- The paid path does not read it either: `stripe_booking.go` sends Checkout back to
+  `/book/{slug}?paid=1`, not to a booking id.
+- Everything else is a `_test.go`, a doc, or the route's own registration.
+
+### The change
+
+```go
+mux.HandleFunc("GET /v1/bookings/{id}", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetBooking)))
+```
+
+Host-scoped routes 31 → 30, credential-scoped 107 → 108. ⚠️ **Those totals are logged,
+not pinned.** `routes_classified_test.go` asserts a floor (`len(routes) >= 150`,
+`checked >= 90` credential routes) and a non-triviality check (each class ≥ 3), then
+`t.Logf`s the counts; the only exact-set pin is `TestPlatformRoutesAreTheIdentityHostSet`,
+and this route is not platform. So nothing in that file needed editing, and nothing there
+would have caught the move either — the gate that does is
+`TestCredentialScopedRoutesAuthenticateFirst`, which now covers this line and insists
+`RequireAuth` wraps `Scoped` rather than the reverse.
+
+### Two refusals, and they are not the same one
+
+- **No credential → 401** (`authentication required`, from `RequireAuth`).
+- **A credential from another workspace → 404.** `CredentialWorkspace` binds the handle
+  to the caller's own workspace, so another workspace's booking is a row that does not
+  exist. Not a 403: a 403 would confirm the id.
+
+Both are asserted. `TestGetBooking_requiresAuth` (SQLite, `internal/handler`) covers
+401 / bad key 401 / own key 200 / unknown id 404, and checks the 401 **body** as well as
+its status, since a 401 that still serialised the row would pass a status-only test.
+⚠️ It was `TestGetBooking_public` and asserted the opposite; it also called the bare
+`h.GetBooking`, so it would have gone on passing untouched after the route was closed —
+it now drives `h.RequireAuth(h.GetBooking)`.
+
+The cross-workspace half needs two workspaces and a `NOBYPASSRLS` role, so it stays in
+the Postgres suite: `TestTenancy_bookingByIDRequiresACredentialOfItsOwnWorkspace`
+(formerly `TestTenancy_bookingByIDIsNotFoundAcrossWorkspaces`, whose first assertion was
+that the anonymous read answered **200**). It adds the mirror case — B's own key on A's
+host must not read B's booking — which is the one that would still pass if the route had
+gained `RequireAuth` while staying `HostWorkspace`.
+
+### What F4 deliberately did not change
+
+`GetBooking` carries no per-user check, so any authenticated member of a workspace can
+read any booking in it by id. Its siblings do not agree on that point either
+(`GetBookingAnswers` and `RescheduleBooking` are host-only, `CancelBooking` is
+admin-or-host, `GetBookingNotes` is deliberately admin-wide and has an
+`audit/claims.yaml` claim saying so), so narrowing it is an access-model decision that
+would want the MCP `get_booking` tool moved in the same commit. Recorded in the handler's
+doc comment rather than fixed here.

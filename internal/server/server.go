@@ -577,7 +577,17 @@ func New(ctx context.Context, cfg *config.Config, db *db.DB, logger *slog.Logger
 	// a non-simple request, so the OPTIONS preflight is handled too.
 	mux.HandleFunc("POST /v1/bookings", cors(bookingRL(h.Scoped(handler.HostWorkspace, (*H).CreateBooking))))
 	mux.HandleFunc("OPTIONS /v1/bookings", cors(func(http.ResponseWriter, *http.Request) {}))
-	mux.HandleFunc("GET /v1/bookings/{id}", h.Scoped(handler.HostWorkspace, (*H).GetBooking))
+	// F4. This read was host-scoped and unauthenticated: the booking id was the whole
+	// capability, so anyone who could reach a tenant's public host and guess or capture
+	// one read the attendee's name, email and intake answers. It is now credential-scoped
+	// like every sibling under /v1/bookings/{id}/*.
+	//
+	// ⛔ Nothing public reads it — proven, not assumed. The booking page and the widget
+	// render their confirmation from the POST /v1/bookings response body (book.html,
+	// embed.js), and the cancel/reschedule links in emails go to /manage/{token}, which
+	// is a separate token-bearing surface. The only callers of /v1/bookings/{id}* in the
+	// tree are the authenticated admin SPA's sub-path calls.
+	mux.HandleFunc("GET /v1/bookings/{id}", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetBooking)))
 	mux.HandleFunc("GET /v1/bookings", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).ListBookings)))
 	mux.HandleFunc("POST /v1/bookings/{id}/cancel", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).CancelBooking)))
 	mux.HandleFunc("PATCH /v1/bookings/{id}/reschedule", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).RescheduleBooking)))

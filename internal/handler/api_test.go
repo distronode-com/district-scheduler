@@ -642,7 +642,15 @@ func TestCreateBooking_doubleBooked(t *testing.T) {
 	}
 }
 
-func TestGetBooking_public(t *testing.T) {
+// TestGetBooking_requiresAuth. Until F4 this test was TestGetBooking_public and asserted
+// the opposite: that GET /v1/bookings/{id} answered 200 with no credential at all. The
+// route is now RequireAuth + CredentialWorkspace like its siblings, so the assertion is
+// inverted — an anonymous read is 401, an authenticated one still returns the booking.
+//
+// ⚠️ It drives h.RequireAuth(h.GetBooking) rather than h.GetBooking, because the old test
+// called the bare handler and would therefore have kept passing unchanged after the route
+// was closed — a test that no longer says anything about the contract it is named for.
+func TestGetBooking_requiresAuth(t *testing.T) {
 	h, key, _ := setupWorkspace(t)
 	slug, _ := seedEventTypeHTTP(t, h, key)
 
@@ -659,19 +667,58 @@ func TestGetBooking_public(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &created)
 	bookingID := created["id"].(string)
 
-	// Get without auth key.
-	req2 := httptest.NewRequest(http.MethodGet, "/v1/bookings/"+bookingID, nil)
+	// No credential: 401, and no part of the booking in the body. The body check is the
+	// point of the test — a 401 that still serialised the row would satisfy the status
+	// assertion alone.
+	anon := httptest.NewRequest(http.MethodGet, "/v1/bookings/"+bookingID, nil)
+	anon.SetPathValue("id", bookingID)
+	anonRec := httptest.NewRecorder()
+	h.RequireAuth(h.GetBooking)(anonRec, anon)
+
+	if anonRec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous get booking: %d, want 401 — %s", anonRec.Code, anonRec.Body.String())
+	}
+	for _, leak := range []string{bookingID, "bob@example.com", "Bob"} {
+		if strings.Contains(anonRec.Body.String(), leak) {
+			t.Errorf("401 body leaked %q: %s", leak, anonRec.Body.String())
+		}
+	}
+
+	// A bad credential is the same refusal, not a different one: 401.
+	bad := authReq(http.MethodGet, "/v1/bookings/"+bookingID, "", "cno_not-a-real-key")
+	bad.SetPathValue("id", bookingID)
+	badRec := httptest.NewRecorder()
+	h.RequireAuth(h.GetBooking)(badRec, bad)
+	if badRec.Code != http.StatusUnauthorized {
+		t.Errorf("bogus key: %d, want 401 — %s", badRec.Code, badRec.Body.String())
+	}
+
+	// The workspace's own key still reads it.
+	req2 := authReq(http.MethodGet, "/v1/bookings/"+bookingID, "", key)
 	req2.SetPathValue("id", bookingID)
 	rec2 := httptest.NewRecorder()
-	h.GetBooking(rec2, req2)
+	h.RequireAuth(h.GetBooking)(rec2, req2)
 
 	if rec2.Code != http.StatusOK {
-		t.Fatalf("get booking: %d — %s", rec2.Code, rec2.Body.String())
+		t.Fatalf("authenticated get booking: %d — %s", rec2.Code, rec2.Body.String())
 	}
 	var b map[string]any
 	json.Unmarshal(rec2.Body.Bytes(), &b)
 	if b["id"] != bookingID {
 		t.Errorf("id = %v; want %s", b["id"], bookingID)
+	}
+
+	// An id that names nothing is 404 for an authenticated caller, which is the answer a
+	// booking in another workspace gets too — there the row is invisible under the
+	// credential's bind rather than absent. The cross-workspace half needs two workspaces
+	// and row-level security, so it lives in the Postgres tenancy suite
+	// (TestTenancy_bookingByIDRequiresACredentialOfItsOwnWorkspace).
+	missing := authReq(http.MethodGet, "/v1/bookings/no-such-booking", "", key)
+	missing.SetPathValue("id", "no-such-booking")
+	missingRec := httptest.NewRecorder()
+	h.RequireAuth(h.GetBooking)(missingRec, missing)
+	if missingRec.Code != http.StatusNotFound {
+		t.Errorf("unknown booking id: %d, want 404 — %s", missingRec.Code, missingRec.Body.String())
 	}
 }
 

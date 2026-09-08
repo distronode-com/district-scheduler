@@ -274,23 +274,54 @@ func TestTenancy_readSurfaces(t *testing.T) {
 	})
 }
 
-// TestTenancy_bookingByIDIsNotFoundAcrossWorkspaces. GET /v1/bookings/{id} is
-// host-scoped, so the 404 comes from the row not being visible under the policy
-// rather than from a predicate the handler remembered to write.
-func TestTenancy_bookingByIDIsNotFoundAcrossWorkspaces(t *testing.T) {
+// TestTenancy_bookingByIDRequiresACredentialOfItsOwnWorkspace.
+//
+// ⛔ This test asserted the opposite until F4, and was named
+// TestTenancy_bookingByIDIsNotFoundAcrossWorkspaces: GET /v1/bookings/{id} was
+// host-scoped and carried no auth middleware, so its first assertion was that an
+// ANONYMOUS request on A's public host answered 200 with A's booking. Reaching a
+// tenant's host is not a credential, so the booking id was the entire capability
+// protecting an attendee's name, email and intake answers. The route is now
+// RequireAuth + CredentialWorkspace, and there are two distinct refusals to hold
+// apart: no credential is 401, and a credential belonging to another workspace is
+// 404 — the row is invisible under that credential's bind, not forbidden, which is
+// what stops the response from confirming the id exists.
+func TestTenancy_bookingByIDRequiresACredentialOfItsOwnWorkspace(t *testing.T) {
 	f := newTenancyFixture(t)
 
-	own := f.do(t, http.MethodGet, f.a.host, "/v1/bookings/"+f.a.bookingID, "", "")
-	if own.Code != http.StatusOK {
-		t.Fatalf("A's own booking on A's host: status = %d: %s", own.Code, own.Body.String())
+	anon := f.do(t, http.MethodGet, f.a.host, "/v1/bookings/"+f.a.bookingID, "", "")
+	if anon.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous read of A's booking on A's host: status = %d, want 401: %s",
+			anon.Code, anon.Body.String())
+	}
+	if strings.Contains(anon.Body.String(), "booker-acme") {
+		t.Errorf("the 401 leaked A's attendee: %s", anon.Body.String())
 	}
 
-	other := f.do(t, http.MethodGet, f.a.host, "/v1/bookings/"+f.b.bookingID, "", "")
+	own := f.do(t, http.MethodGet, f.a.host, "/v1/bookings/"+f.a.bookingID, f.a.apiKey, "")
+	if own.Code != http.StatusOK {
+		t.Fatalf("A's own booking with A's key: status = %d: %s", own.Code, own.Body.String())
+	}
+
+	// B's id under A's credential. On the identity host, which names no workspace, so
+	// the 404 is the credential's bind and not D10's host/credential mismatch 403.
+	other := f.do(t, http.MethodGet, "app.calnode.example", "/v1/bookings/"+f.b.bookingID, f.a.apiKey, "")
 	if other.Code != http.StatusNotFound {
-		t.Errorf("B's booking id on A's host: status = %d, want 404: %s", other.Code, other.Body.String())
+		t.Errorf("B's booking id under A's key: status = %d, want 404: %s", other.Code, other.Body.String())
 	}
 	if strings.Contains(other.Body.String(), "booker-globex") {
 		t.Errorf("B's attendee leaked: %s", other.Body.String())
+	}
+
+	// And the mirror image, which is the half that would still pass if the route had
+	// merely gained RequireAuth without moving off HostWorkspace: B's own key must not
+	// read B's booking through A's host either.
+	crossHost := f.do(t, http.MethodGet, f.a.host, "/v1/bookings/"+f.b.bookingID, f.b.apiKey, "")
+	if crossHost.Code == http.StatusOK {
+		t.Errorf("B's key read B's booking on A's host: %s", crossHost.Body.String())
+	}
+	if strings.Contains(crossHost.Body.String(), "booker-globex") {
+		t.Errorf("B's attendee leaked through A's host: %s", crossHost.Body.String())
 	}
 }
 
