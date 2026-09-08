@@ -73,18 +73,29 @@ func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	h.writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":            enabled != 0,
-		"endpoint":           endpoint,
-		"model":              model,
-		"api_key_set":        keyEnc != "",
-		"configured":         endpoint != "",
-		"active":             h.getLLM() != nil,
-		"extra_instructions": extra,
+	body := map[string]any{
+		"enabled":    enabled != 0,
+		"configured": endpoint != "",
+		"active":     h.getLLM() != nil,
 		// Read-only: the code-owned base prompt, so admins can see what their instructions
 		// are added to (they can't edit it — it's the tool-calling contract).
-		"base_prompt": assistantBaseRules,
-	})
+		"extra_instructions": extra,
+		"base_prompt":        assistantBaseRules,
+	}
+	// ⛔ `endpoint`, `model` and `api_key_set` describe the model provider the PLATFORM
+	// pays for, not anything of this workspace's, so a multi-tenant instance does not
+	// return them at all (H1). The platform's own dashboard already strips the three in
+	// its response allowlist; this is the half a raw `cno_` key cannot go round.
+	//
+	// `configured` and `active` stay: both are booleans about whether the summariser
+	// will run, which is the question a tenant admin legitimately has, and neither
+	// names what powers it.
+	if !h.multiTenant {
+		body["endpoint"] = endpoint
+		body["model"] = model
+		body["api_key_set"] = keyEnc != ""
+	}
+	h.writeJSON(w, http.StatusOK, body)
 }
 
 // PatchLLMSettings handles PATCH /v1/settings/llm (admin only): save settings and

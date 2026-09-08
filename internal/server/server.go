@@ -490,16 +490,31 @@ func New(ctx context.Context, cfg *config.Config, db *db.DB, logger *slog.Logger
 	mux.HandleFunc("GET /branding/banner", h.Scoped(handler.HostWorkspace, (*H).ServeBrandingBanner))
 
 	// Server settings — email (SMTP) and Google OAuth
+	//
+	// ⛔ THE h.PlatformManaged ROUTES BELOW HOLD AN INSTANCE CREDENTIAL, NOT A TENANT'S
+	// DATA (H1). `server_settings` is per workspace, so most of these are self-scoped —
+	// but the credential each one names is the PROCESS's: the SMTP account every tenancy
+	// sends through, the Google OAuth client every tenancy's calendar connect and login
+	// uses, the Zoom app, the LiveKit server, the Stripe account. On a multi-tenant
+	// instance the platform provisions all five, so a tenant credential (a session or a
+	// `cno_` key its own Developer tab minted) gets 403 `managed_by_platform` instead.
+	// Single-tenant is untouched — there the operator is the instance.
+	//
+	// The wrapper is at the REGISTRATION rather than inside each handler so
+	// routes_platform_managed_test.go can read this file and fail on one of these paths
+	// registered without it. Everything NOT wrapped here is deliberately tenant-safe and
+	// is what the platform's own dashboard calls: branding, the storage toggle, the
+	// notetaker toggle, the tracking ids, and the two LLM fields below.
 	settingsRL := RateLimit(20, time.Minute)
-	mux.HandleFunc("GET /v1/settings/email", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetEmailSettings)))
-	mux.HandleFunc("PATCH /v1/settings/email", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchEmailSettings))))
-	mux.HandleFunc("POST /v1/settings/email/test", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).TestEmailConnection))))
-	mux.HandleFunc("GET /v1/settings/google", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetGoogleSettings)))
-	mux.HandleFunc("PATCH /v1/settings/google", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchGoogleSettings))))
-	mux.HandleFunc("GET /v1/settings/zoom", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetZoomSettings)))
-	mux.HandleFunc("PATCH /v1/settings/zoom", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchZoomSettings))))
-	mux.HandleFunc("GET /v1/settings/livekit", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetLiveKitSettings)))
-	mux.HandleFunc("PATCH /v1/settings/livekit", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchLiveKitSettings))))
+	mux.HandleFunc("GET /v1/settings/email", h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetEmailSettings))))
+	mux.HandleFunc("PATCH /v1/settings/email", settingsRL(h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchEmailSettings)))))
+	mux.HandleFunc("POST /v1/settings/email/test", settingsRL(h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).TestEmailConnection)))))
+	mux.HandleFunc("GET /v1/settings/google", h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetGoogleSettings))))
+	mux.HandleFunc("PATCH /v1/settings/google", settingsRL(h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchGoogleSettings)))))
+	mux.HandleFunc("GET /v1/settings/zoom", h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetZoomSettings))))
+	mux.HandleFunc("PATCH /v1/settings/zoom", settingsRL(h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchZoomSettings)))))
+	mux.HandleFunc("GET /v1/settings/livekit", h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetLiveKitSettings))))
+	mux.HandleFunc("PATCH /v1/settings/livekit", settingsRL(h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchLiveKitSettings)))))
 	mux.HandleFunc("GET /v1/settings/storage", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetStorageSettings)))
 	mux.HandleFunc("PATCH /v1/settings/storage", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchStorageSettings))))
 	mux.HandleFunc("GET /v1/settings/notetaker", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetNotetakerSettings)))
@@ -507,12 +522,16 @@ func New(ctx context.Context, cfg *config.Config, db *db.DB, logger *slog.Logger
 	mux.HandleFunc("GET /v1/bookings/{id}/notes", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetBookingNotes)))
 	mux.HandleFunc("POST /v1/bookings/{id}/notes/regenerate", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).RegenerateBookingNotes)))
 	mux.HandleFunc("GET /v1/bookings/{id}/transcript", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetBookingTranscript)))
-	mux.HandleFunc("GET /v1/settings/stripe", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetStripeSettings)))
-	mux.HandleFunc("PATCH /v1/settings/stripe", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchStripeSettings))))
+	mux.HandleFunc("GET /v1/settings/stripe", h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetStripeSettings))))
+	mux.HandleFunc("PATCH /v1/settings/stripe", settingsRL(h.PlatformManaged(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchStripeSettings)))))
 	mux.HandleFunc("GET /v1/settings/tracking", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetTrackingSettings)))
 	mux.HandleFunc("PATCH /v1/settings/tracking", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchTrackingSettings))))
 	mux.HandleFunc("GET /v1/settings/llm", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetLLMSettings)))
-	mux.HandleFunc("PATCH /v1/settings/llm", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchLLMSettings))))
+	// ⛔ Guarded by FIELD, not by route: `enabled` and `extra_instructions` belong to the
+	// workspace (they are the only two the platform's catalog offers), while `endpoint`,
+	// `model` and `api_key` name the model provider the PLATFORM pays for. A body naming
+	// any of the three is 403 `managed_by_platform`; a body naming neither is unchanged.
+	mux.HandleFunc("PATCH /v1/settings/llm", settingsRL(h.PlatformManagedFields("endpoint", "model", "api_key")(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchLLMSettings)))))
 	mux.HandleFunc("POST /v1/settings/llm/test", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).TestLLMSettings))))
 	mux.HandleFunc("GET /v1/settings/branding", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetBranding)))
 	mux.HandleFunc("PATCH /v1/settings/branding", settingsRL(h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchBranding))))

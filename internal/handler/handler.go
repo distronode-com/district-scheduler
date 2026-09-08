@@ -1,7 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -397,6 +400,106 @@ func (h *Handler) isEmailEnabled() bool {
 
 func (h *Handler) writeError(w http.ResponseWriter, status int, msg string) {
 	h.writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// platformManagedMessage is the body of a refusal on a route whose subject is an
+// INSTANCE credential rather than a tenant's own data (H1).
+//
+// Deliberately not managedRowMessage ("managed by your platform"), which answers a
+// caller who reached a managed ROW they own the user of. This one is about a whole
+// route, the caller has nothing there to own, and the platform's dashboard matches on
+// the token — so it is a token, not a sentence.
+const platformManagedMessage = "managed_by_platform"
+
+// platformManagedBodyLimit caps what PlatformManagedFields reads before deciding. It
+// matches the MaxBytesReader every settings handler applies to its own body, so this
+// wrapper never truncates a body the handler would have accepted.
+const platformManagedBodyLimit = 8 << 10
+
+// PlatformManaged refuses a TENANT credential on a route that reads or writes an
+// INSTANCE credential — the SMTP account, the Google OAuth client, Zoom, LiveKit,
+// Stripe — every one of which is shared by every workspace on the process.
+//
+// ⛔ It is a multi-tenant-only refusal, and a single-tenant instance passes straight
+// through: there the operator IS the instance, and these pages are the only way to
+// configure it. On a multi-tenant instance the platform provisions those credentials
+// (see docs/MULTI_TENANT.md) and a tenant admin has no business reading them, let
+// alone replacing them: `PatchGoogleSettings` used to hot-reload the OAuth client
+// PROCESS-WIDE, so one tenancy's PATCH re-pointed every other tenancy's calendar
+// connect and OAuth login until the next restart.
+//
+// ⚠️ Applied at REGISTRATION rather than inside each handler, and named so a scan
+// finds it: routes_platform_managed_test.go reads server.go and fails on any of these
+// paths registered without a guard. A per-handler check would be invisible to that
+// test, and the two settings handlers that shipped without `requireAdmin` are the
+// standing evidence that copy-paste is how this class of check goes missing.
+//
+// Outside RequireAuth on purpose. The answer does not depend on WHICH credential the
+// caller holds — no tenant credential may reach this route in this mode — so refusing
+// before the credential lookup spends no database round trip on a request that cannot
+// succeed. It costs the distinction between 401 and 403 for an anonymous caller, which
+// discloses nothing the route table does not.
+func (h *Handler) PlatformManaged(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.multiTenant {
+			h.writeError(w, http.StatusForbidden, platformManagedMessage)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// PlatformManagedFields is PlatformManaged for a route the platform owns only PART of.
+//
+// `PATCH /v1/settings/llm` carries both: `enabled` and `extra_instructions` are the
+// tenant's (the dashboard's catalog offers exactly those two), while `endpoint`,
+// `model` and `api_key` name the model provider this platform pays for. So the refusal
+// is by FIELD PRESENCE, not by route: a body naming any of fields is 403, and a body
+// naming none of them is the ordinary request it always was.
+//
+// ⚠️ Presence, not value. `{"api_key": ""}` is refused too, because a tenant that can
+// send the key at all can CLEAR the instance's, and an empty string is how the existing
+// handler spells "keep what is stored" — a refusal that only looked at non-empty values
+// would let the least obvious of the three writes through.
+//
+// The body is read here and handed back to the handler as a fresh reader, because a
+// consumed body is an empty one. The limit matches the handler's own MaxBytesReader so
+// nothing this wrapper accepts is a body the handler would have rejected for size.
+func (h *Handler) PlatformManagedFields(fields ...string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !h.multiTenant || r.Body == nil {
+				next(w, r)
+				return
+			}
+			body, err := io.ReadAll(io.LimitReader(r.Body, platformManagedBodyLimit+1))
+			if err != nil {
+				h.writeError(w, http.StatusBadRequest, "invalid JSON")
+				return
+			}
+			if len(body) > platformManagedBodyLimit {
+				h.writeError(w, http.StatusRequestEntityTooLarge, "request body is too large")
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+
+			// An unparseable body is passed through rather than refused: the handler's
+			// own decoder owns that error, and answering 403 for what is really a 400
+			// would send an operator hunting for a permission they do have.
+			var named map[string]json.RawMessage
+			if json.Unmarshal(body, &named) != nil {
+				next(w, r)
+				return
+			}
+			for _, f := range fields {
+				if _, present := named[f]; present {
+					h.writeError(w, http.StatusForbidden, platformManagedMessage)
+					return
+				}
+			}
+			next(w, r)
+		}
+	}
 }
 
 // requireAdmin resolves the authenticated caller and writes a 403 (returning
