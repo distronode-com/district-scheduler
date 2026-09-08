@@ -2793,3 +2793,157 @@ addition to those fixtures is not debugging a 404 it never asked for.
 `PLATFORM_RETURN_ORIGINS`, which is likewise multi-tenant-only and documented in one place.
 No browser verification: the switch is a status code and every surface it touches is
 asserted through the real mux.
+
+## F6 — the hardening release: what a tenant credential cannot do
+
+Six findings from the platform-side audit, all of them "this is correct for a self-hoster
+and wrong for a multi-tenant instance". Every one is gated on `MultiTenant` and
+single-tenant behaviour is unchanged throughout, which is the gate this fork has always
+held itself to.
+
+### H1 — the instance-credential settings routes
+
+`server_settings` is per workspace, so `GET|PATCH /v1/settings/{email,google,zoom,livekit,
+stripe}` looked self-scoped. What each one CONFIGURES is the process's: the SMTP account
+every tenancy sends through, the OAuth client every tenancy's calendar connect and login
+uses, the Zoom app, the LiveKit server, the Stripe account.
+
+`PatchGoogleSettings` made it concrete. It hot-reloaded `calendar.Service` and the Google
+OAuth config on `*shared`, which every per-request copy of the Handler points at — so one
+workspace's PATCH re-pointed every OTHER workspace's calendar connect and OAuth login
+until the next restart, and `client_id: ""` switched Google calendar off instance-wide.
+
+Two guards, deliberately. `h.PlatformManaged` at the REGISTRATION answers 403
+`managed_by_platform` before `RequireAuth` spends a database round trip on a request that
+cannot succeed; and the hot-reload block itself is skipped in that mode, because the first
+guard is one line in another package and the blast radius of losing it is every tenancy on
+the process.
+
+⛔ **The platform's own op catalog was never the boundary.** It excludes these routes, and
+its Developer tab mints a raw `cno_` key that `RequireAuth` accepts on every credential
+route — so the catalog protects the console and not the instance.
+
+`PATCH /v1/settings/llm` is guarded by FIELD rather than by route, because the page carries
+both: `enabled` and `extra_instructions` are the workspace's and are the only two the
+catalog offers, while `endpoint`, `model` and `api_key` name the model provider the
+platform pays for. `h.PlatformManagedFields` reads the body, decides on key PRESENCE, and
+hands an equivalent reader back. `{"api_key":""}` is refused too — an empty string is how
+the handler spells "keep the stored one", so a guard that looked at values would let the
+least visible of the three writes through. `GET /v1/settings/llm` stops returning the same
+three; `configured` and `active` stay, because "will the summariser run" is a question a
+tenant admin legitimately has.
+
+### H3 — the console off-switch, and the bypass it shipped with
+
+The `ADMIN_SPA=off` guard refused only a hand-off with NO `?next=`, on the reasoning that
+an explicit destination is the caller saying where to land. That read as deference and was
+a bypass: both native clients send `next=/admin/` on every hand-off, so after a flip the
+guard would have fired for nobody.
+
+What the person got instead was the exact failure it exists to prevent, one step later —
+token verified, single-use `jti` spent, session cookie set, sheet landing on a bare 404 —
+and neither app could report it, because only a non-3xx opens their error path. A probe
+asserting the hand-off answers 3xx stays green straight through the flip.
+
+A `next` whose normalised path is `/admin` or under it now answers 404 before the nonce is
+claimed. `nextIsAdminConsole` normalises the way the mux and `http.Redirect` do — `url.Parse`
+to strip the query and percent-decode, `path.Clean` to resolve `..` — so `/%61dmin/` is
+refused and `/admin/../book/intro` is allowed, because it genuinely lands outside the
+console. Case-SENSITIVE, because `ServeMux` matches bytes and `/ADMIN/` is not the console.
+
+### M1 — the CalDAV client's SSRF tier is now a property of the instance
+
+`server_url` is a bring-your-own-server field, and the narrow metadata-only guard is
+correct for a self-hoster: a Nextcloud, Radicale or Baïkal on their own LAN is the intended
+configuration. Every term of that inverts here — the string is a TENANT's, the private
+network it reaches is the OPERATOR's (the k3s service range, node-exporter,
+postgres_exporter, Alloy, the website pod, the media plane), and `calendar.caldav.connect`
+is a viewer-level op — so `caldav.WithStrictSSRFGuard(cfg.MultiTenant)` routes every dial,
+and every redirect hop, through `netutil.ResolveSafe`.
+
+⛔ **The error text is half the fix, not a detail.** `ConnectCalDAV` writes `err.Error()`
+straight into a 400 for the connect form, so a refusal naming the blocked address would
+hand the caller the oracle the guard closes — and with a hostname resolving several ways,
+which address it picked. A blocked dial now produces the sentence discovery has always
+produced for an unreachable server, verbatim. `netutil.ErrBlockedAddress` is a sentinel so
+the mapping is one `errors.Is` through `*url.Error` rather than string matching.
+
+### M2 — limiter buckets key on the credential, not the address
+
+D14 made a bucket `(workspace, client IP)` so two tenants' bookers behind one address could
+not share an allowance. The same failure was live one dimension over: a platform reaches
+every tenant host from one egress address per region, so all authenticated traffic to a
+given tenant shared one 20-per-minute budget and the busiest caller spent it on everyone
+else. The workspace prefix cannot help, because it is the traffic to ONE tenant host that
+shares the address.
+
+The caller half is now a SHA-256 prefix of the credential the request presents —
+`X-API-Key`, an `Authorization` bearer, or the session cookie, in `RequireAuth`'s own
+precedence — and the resolved client IP when there is none. Hashed and read straight off
+the request, because the limiter runs before `RequireAuth` and must not do a database read
+to reject. It keys on what was PRESENTED rather than the user it resolves to, so an invalid
+key gets its own bucket instead of falling in with the anonymous ones. The two halves are
+namespaced `c:` and `ip:` so a hash cannot collide with an address.
+
+### L1 — https-only webhooks
+
+A booking payload carries the attendee's name, email address and intake answers. Plaintext
+delivery stays legal single-tenant (their data, their network) and is 400 here. Only create
+is affected: `PATCH /v1/webhooks/{id}` has no `url` parameter to guard.
+
+### L6 — `head_html` refused, and ignored
+
+The field injects raw HTML into the `<head>` of the workspace's booking pages and RELAXES
+that page's CSP to fit it — on the operator's domain, on a page that collects card details.
+A non-empty value is 400 `managed_by_platform`; empty passes, because clearing it is what
+this mode wants. Refused rather than stripped: a tenant who believes their tag is installed
+and sees no traffic has the worse problem.
+
+⛔ **The write check alone would have been half a fix.** A row can already hold the value
+— provisioned earlier, restored by an import, carried over from an instance later switched
+over — and nothing would stop it rendering until someone saved the page. `loadTrackingSettings`
+blanks it at READ time, the one chokepoint every reader goes through, which is also what
+keeps the CSP strict: `publicCSP` decides on the same struct, so markup and policy have no
+second place to disagree.
+
+### Tests
+
+No route was added or removed: the classification gate still reads **184 routes — 30
+host-scoped, 108 credential-scoped, 38 platform, 8 allowlisted**.
+
+- `internal/server/routes_platform_managed_test.go` — the new classification-style gate.
+  `TestInstanceCredentialRoutesAreGuardedByPlatformManaged` asserts in BOTH directions (a
+  guarded path that loses its wrapper, and a tenant-safe path that gains one),
+  `TestEverySettingsRouteHasATenancyDecision` fails on a `/v1/settings` route in neither
+  table, `TestNoPlatformManagedGuardOutsideItsTable` catches a stray guard.
+- `internal/handler/platform_managed_test.go` — the eleven guarded routes in both modes,
+  the tenant-safe four still answering 200 under `MultiTenant`, the LLM field split
+  (including `{"api_key":""}`), the body surviving the wrapper, and the GET redaction.
+- `internal/handler/google_settings_tenancy_internal_test.go` — the hot reload, asserted by
+  calling the handler DIRECTLY past the wrapper, which is what a refactor that dropped it
+  would produce. Internal because `calBase`/`googleAuth` are unexported on purpose.
+- `internal/handler/sso_test.go` — `…AnExplicitAdminNextIs404` (seven shapes, each
+  asserting the `jti` is unspent), `…AnExplicitNextIsUnchanged` (four, including the
+  climbing case), `…withTheConsoleOnAnAdminNextStillLands`.
+- `internal/caldav/ssrf_test.go` — seven IP literals through the REAL resolver, a name
+  through a stub (the rebinding case a literal cannot cover), a public address still
+  connecting in the same mode, and the narrow default still allowing loopback.
+  `assertRefusedWithoutDisclosing` pins that the sentence names no address and no reason.
+- `internal/server/ratelimit_credential_test.go` — two bearers from one address, two
+  sessions, anonymous still keyed on the address, credential and anonymous not sharing,
+  the workspace dimension surviving, single-tenant unchanged, and the key's shape.
+- `internal/handler/webhook_test.go`, `tracking_tenancy_test.go`,
+  `tracking_settings_internal_test.go` — L1 and L6 in both modes, including the stored-row
+  read and the CSP that must stay strict.
+
+### Not done
+
+- **`POST /v1/settings/llm/test` is NOT guarded.** It takes `endpoint`, `model` and
+  `api_key` in its own body and dials them, falling back to the STORED key when `api_key`
+  is empty — so a tenant can still ask the instance to make one request to a host they
+  chose, and to do it holding the platform's key. It is outside this packet's scope and is
+  listed in `routes_platform_managed_test.go` as tenant-safe with that caveat attached, so
+  the decision is recorded rather than implied.
+- No migration, no schema change, no frontend change, no `go.mod` change.
+- `DEPLOY.md` is unchanged, following `PLATFORM_RETURN_ORIGINS` and `ADMIN_SPA`: all of
+  this is multi-tenant-only and documented in one place.

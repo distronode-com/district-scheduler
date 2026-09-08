@@ -68,13 +68,22 @@ serve the console the operator wrote the variable to remove.
 self-hoster would be locked out of their own installation. A stray `ADMIN_SPA=off`
 there is a startup warning saying it did nothing, not a refusal.
 
-⛔ **With the console off, an SSO hand-off needs an explicit `next`.** The default
-destination is `/admin/`, which now 404s, so a hand-off without one answers 404 **before
-minting the session** rather than seating a session and landing the person on a dead end
-— the token is single-use, so a redirect into a 404 could not even be retried. The
-calendar connect round trip (`?next=/v1/calendar/connect?provider=…&return_to=…`) is
-unaffected, and so is any other explicit `next`, including one naming `/admin/`: the
-caller said where to land.
+⛔ **With the console off, an SSO hand-off needs an explicit `next` OUTSIDE `/admin`.**
+The default destination is `/admin/`, which now 404s, so a hand-off without one answers
+404 **before minting the session** rather than seating a session and landing the person
+on a dead end — the token is single-use, so a redirect into a 404 could not even be
+retried. The calendar connect round trip
+(`?next=/v1/calendar/connect?provider=…&return_to=…`) is unaffected, and so is any other
+explicit `next` that lands outside the console.
+
+⛔ **An explicit `next` under `/admin` is refused too, and this said the opposite until
+F6.** The old rule — "the caller said where to land" — read as deference and was a
+bypass: native clients send `next=/admin/` on every hand-off, so with the console off the
+guard fired for nobody, and the person got the exact failure it exists to prevent one
+step later, with the token spent and the session already seated. The comparison is on the
+normalised path (percent-decoded, `..` resolved, case-sensitive because `ServeMux`
+matches bytes), so `/%61dmin/` is refused and `/admin/../book/x` is allowed — it lands
+outside the console, which is what the browser would do with it too.
 
 ### `PLATFORM_RETURN_ORIGINS`
 
@@ -154,6 +163,86 @@ An unrecognised host is a **404**, never a fallback to a default tenant: falling
 one tenant's booking page on any domain pointed at the instance. A credential that resolves
 workspace A on workspace B's host is **403 `{"error":"workspace mismatch"}`**. A suspended
 workspace answers **503** with `Retry-After` on its public and admin surfaces.
+
+## What a tenant credential cannot do
+
+Every route below is an ordinary credential route that a workspace admin's session or
+`cno_` API key reaches. In **single-tenant mode nothing here applies**: the operator is the
+instance, and these are the only surfaces they have to configure it with. In multi-tenant
+mode the platform owns each of them, and the refusal lives in the fork rather than only in
+the platform's own console — because a workspace admin can mint a raw API key for
+themselves and call the fork directly, so a console-side allowlist protects the console and
+not the instance.
+
+| surface | multi-tenant answer |
+|---|---|
+| `GET`/`PATCH /v1/settings/{email,google,zoom,livekit,stripe}`, `POST /v1/settings/email/test` | **403** `{"error":"managed_by_platform"}` |
+| `PATCH /v1/settings/llm` naming `endpoint`, `model` or `api_key` | **403** `{"error":"managed_by_platform"}`; `enabled` and `extra_instructions` are the tenant's and are unaffected |
+| `GET /v1/settings/llm` | answers without `endpoint`, `model` or `api_key_set`; `enabled`, `configured`, `active` and `extra_instructions` stay |
+| `PATCH /v1/settings/tracking` with a non-empty `head_html` | **400** `{"error":"managed_by_platform"}`; the GA4/GTM id fields stay |
+| `POST /v1/webhooks` with an `http://` URL | **400**; https only |
+| `POST /v1/calendar/caldav/connect` to a private, loopback, link-local or metadata address | the ordinary "could not reach the CalDAV server", with no address in it |
+
+The reasoning, per row:
+
+- **The five credential pages configure the PROCESS, not the workspace.** `server_settings`
+  is per workspace, so they look self-scoped; what each one names is not. The SMTP account
+  every tenancy sends through, the OAuth client every tenancy's calendar connect and login
+  uses, the Zoom app, the LiveKit server, the Stripe account. `PatchGoogleSettings` made
+  that concrete: it hot-reloaded `calendar.Service` and the Google OAuth config on the
+  process, so one workspace's PATCH re-pointed every other workspace's calendar and login
+  until the next restart. That hot reload is now skipped entirely in this mode, as a second
+  guard behind the 403 — the row is still written and still applies to that workspace.
+- **The LLM split is by field because the page is.** `enabled` and `extra_instructions` are
+  the workspace's own summariser settings; `endpoint`, `model` and `api_key` name the model
+  provider the platform pays for. An empty `api_key` is refused too: `""` is how the handler
+  spells "keep the stored one", so a tenant that can send the field can clear the
+  instance's.
+- **`head_html` is refused AND ignored.** It injects raw HTML into the `<head>` of the
+  workspace's booking pages and relaxes that page's CSP to fit it — on the operator's
+  domain, on a page that collects card details. A row that already holds one stops
+  rendering at read time, so a value written before this shipped (or restored by an import)
+  needs nobody to save the page.
+- **Webhook URLs must be https.** A booking payload carries the attendee's name, email
+  address and intake answers. A self-hoster posting to their own machine over plaintext is
+  their own data on their own network; a tenant's URL sends the operator's customers'
+  details off the operator's network.
+- **CalDAV resolves through the strict guard.** `server_url` is a bring-your-own-server
+  field, so single-tenant keeps the narrow metadata-only block: a Nextcloud or Radicale on
+  the operator's LAN is the intended configuration. Here the string is a tenant's and the
+  private network it reaches is the operator's — the pod network, the node's exporters, the
+  media plane — so every dial and every redirect hop goes through `netutil.ResolveSafe`, the
+  guard webhook delivery already uses. ⛔ The error text is part of the fix: connect-success
+  versus connect-failure, times a hostname the caller controls, is a port scan, so a refused
+  dial produces the same sentence an unreachable server produces and names no address.
+
+⛔ **Everything NOT on that list is deliberately reachable, and it is what the platform's own
+console calls**: branding, the storage toggle, the notetaker toggle, the tracking ids, the
+two LLM fields, and every `/v1/{event-types,bookings,users,teams,availability-*,webhooks,
+api-keys,calendar,recordings}` route. Guarding one of them would break the console in
+multi-tenant mode only, which is the mode nobody runs locally.
+`internal/server/routes_platform_managed_test.go` reads `server.go` and asserts both
+directions, and fails on a `/v1/settings` route that is in neither table.
+
+### Rate-limit buckets
+
+⛔ **In multi-tenant mode an authenticated request keys on its CREDENTIAL, not on its
+address.** The bucket is `(workspace host, caller)`, where the caller is a SHA-256 prefix of
+the `X-API-Key` header, the `Authorization: Bearer` value or the session cookie — whichever
+the request carries, in `RequireAuth`'s own precedence — and the resolved client IP when it
+carries none.
+
+The address is the right identity for an anonymous booker and the wrong one for an API
+caller. A platform reaches every tenant host from a small number of egress addresses, so
+keyed on the address alone an entire region's authenticated traffic to one tenant shared a
+single 20-per-minute budget, and the busiest caller spent it on everyone else. That is the
+failure the `(workspace, IP)` pair was introduced to prevent, one dimension over.
+
+The credential is hashed and read straight off the request: the limiter runs **before**
+`RequireAuth`, so it must not do a database read to decide whether to reject, and a raw
+bearer must not sit in a map key that outlives the request. It keys on what was
+**presented**, not on the user it resolves to, so an invalid key gets its own bucket rather
+than falling in with the anonymous ones. Single-tenant is unchanged: the client IP alone.
 
 ## The platform API
 
@@ -349,9 +438,9 @@ is looked at.
   nor delete it.
 - `role` from the token applies only to a user it creates; an existing user's role is never
   rewritten by a sign-in.
-- With `ADMIN_SPA=off` the default landing route does not exist, so a hand-off carrying no
-  `next` is a 404 **before** the nonce is claimed and before the session is created. See
-  [`ADMIN_SPA`](#admin_spa).
+- With `ADMIN_SPA=off` no route under `/admin` exists, so a hand-off carrying no `next` —
+  **or one whose `next` lands under `/admin`** — is a 404 **before** the nonce is claimed
+  and before the session is created. See [`ADMIN_SPA`](#admin_spa).
 
 The login start carries the workspace in the state **cookie** (`<nonce>|<workspace_id>`) and sends
 only the nonce to the provider. The nonce is compared, the workspace is read: a visitor can rewrite
@@ -410,7 +499,7 @@ and nothing is disclosed either way. Single-tenant keeps the original verify-the
 |---|---|
 | **the data encryption key** | one wrapped DEK per process. An operator who can read the database can decrypt every workspace, and a workspace cannot move between instances without its key. The import fingerprint check makes the coupling loud rather than silent |
 | **the OAuth app credentials** | Google/Microsoft client id and secret identify the *instance* to the provider, not the tenant |
-| **rate-limit windows** | keyed `(workspace, client IP)`, but the counters live in one process |
+| **rate-limit windows** | keyed `(workspace, credential-or-client-IP)` — see [Rate-limit buckets](#rate-limit-buckets) — but the counters live in one process |
 | **retention sweeps** | expired sessions, tokens and deliveries are purged globally: they are retention rules, not tenant logic |
 
 ## Operator checklist
