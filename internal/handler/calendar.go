@@ -366,7 +366,20 @@ func (h *Handler) ConnectCalDAV(w http.ResponseWriter, r *http.Request) {
 	// The caldav.Client's own http.Client re-validates at dial time
 	// (internal/caldav/caldav.go), and the cc.Connect below immediately exercises the
 	// URL, so a save-time DNS blip surfaces there as a user-actionable error.
-	if err := validateBYOServerURL(r.Context(), server, "server URL", "http", "https"); err != nil {
+	//
+	// ⛔ THE SCHEME LIST IS PER MODE (M1). CalDAV Basic auth puts the person's
+	// app-specific password on the wire in every request, so `http://` is a credential
+	// disclosure — but on a single-tenant instance it is the operator's own password
+	// going to their own server on their own network, which is a call they are entitled
+	// to make and have always been able to. On a multi-tenant instance the password
+	// belongs to a TENANT and the hop leaves the operator's network, so only https is
+	// accepted. Same refusal shape either way: validateBYOServerURL names the field and
+	// the schemes it will take.
+	schemes := []string{"http", "https"}
+	if h.multiTenant {
+		schemes = []string{"https"}
+	}
+	if err := validateBYOServerURL(r.Context(), server, "server URL", schemes...); err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
