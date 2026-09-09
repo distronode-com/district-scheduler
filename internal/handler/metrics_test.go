@@ -122,7 +122,7 @@ func TestMetrics_servesExpositionWithTheToken(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"calnode_jobs_pending 2",
-		"calnode_jobs_failed_total 1",
+		"calnode_jobs_failed 1",
 		"# TYPE calnode_build_info gauge",
 	} {
 		if !strings.Contains(body, want+"\n") {

@@ -59,7 +59,7 @@ func TestWrite_exposesEveryDocumentedSeries(t *testing.T) {
 		`calnode_bookings_total{event="cancelled"} 0`,
 		`calnode_bookings_total{event="rescheduled"} 0`,
 		`calnode_jobs_pending 4`,
-		`calnode_jobs_failed_total 2`,
+		`calnode_jobs_failed 2`,
 		`calnode_http_request_duration_seconds_count 3`,
 	} {
 		if !hasLine(lines, want) {
@@ -91,7 +91,7 @@ func TestWrite_everyMetricHasHelpAndType(t *testing.T) {
 		"calnode_http_requests_total",
 		"calnode_http_request_duration_seconds",
 		"calnode_jobs_pending",
-		"calnode_jobs_failed_total",
+		"calnode_jobs_failed",
 		"calnode_bookings_total",
 		"process_start_time_seconds",
 		"go_goroutines",

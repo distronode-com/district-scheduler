@@ -78,7 +78,7 @@ app you must `pnpm build` in `frontend/` **and** rebuild/restart the Go binary
   binary). Series: `calnode_build_info{version,commit}`,
   `calnode_http_requests_total{class,status}`,
   `calnode_http_request_duration_seconds` (histogram, fixed buckets),
-  `calnode_jobs_pending`, `calnode_jobs_failed_total`,
+  `calnode_jobs_pending`, `calnode_jobs_failed`,
   `calnode_bookings_total{event}` for created/cancelled/rescheduled,
   `process_start_time_seconds`, `go_goroutines`, `go_memstats_alloc_bytes`.
   ⛔ **Gated on `Authorization: Bearer $METRICS_TOKEN`, and it answers 404** — identical

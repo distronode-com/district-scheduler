@@ -3,6 +3,7 @@ package handler_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -141,18 +142,35 @@ func TestTransferOwnership_requiresOwner(t *testing.T) {
 // DELETE /v1/users/{id}  — role + booking guards
 // ---------------------------------------------------------------------------
 
+// The target is the workspace's REAL owner, and the actor is an admin.
+//
+// ⚠️ This used to seed a second user with is_owner = 1 and delete that. Two things were
+// wrong with it. The insert's error was discarded, so once the one-live-owner index
+// existed the row was never created and the 404 that followed looked like a broken
+// guard rather than a broken fixture. And had the actor been the owner deleting
+// themselves, the request would have stopped at the "you cannot delete your own account"
+// guard, which is also a 400 — the assertion would have passed while never reaching the
+// owner check it names. Deleting the real owner as an admin is the case the guard is
+// for, and it is the only path to it.
 func TestDeleteUser_cannotRemoveOwner(t *testing.T) {
-	h, database, ownerKey, _ := setupWorkspaceWithDB(t)
-	// Make a second owner-less admin actor isn't needed; owner deletes... the owner.
-	// Insert another user flagged as owner to attempt deletion of an owner.
-	database.Exec(`INSERT INTO users (id,email,name,iana_timezone,is_admin,is_owner) VALUES ('u2','o2@example.com','Owner2','UTC',1,1)`)
+	h, database, _, ownerID := setupWorkspaceWithDB(t)
+	adminKey := "admin-del-owner-key"
+	if _, err := database.Exec(`INSERT INTO users (id,email,name,iana_timezone,is_admin,is_owner) VALUES ('u2','a@example.com','Admin','UTC',1,0)`); err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO api_keys (id,user_id,name,key_hash,created_at) VALUES ('k2','u2','t',?,'2024-01-01')`, sha256HexForTest(adminKey)); err != nil {
+		t.Fatalf("seed admin key: %v", err)
+	}
 
-	req := authReq(http.MethodDelete, "/v1/users/u2", "", ownerKey)
-	req.SetPathValue("id", "u2")
+	req := authReq(http.MethodDelete, "/v1/users/"+ownerID, "", adminKey)
+	req.SetPathValue("id", ownerID)
 	rec := httptest.NewRecorder()
 	h.RequireAuth(h.DeleteUser)(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("got %d; want 400 (cannot remove owner)", rec.Code)
+		t.Errorf("got %d; want 400 (cannot remove owner) — %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "transfer ownership") {
+		t.Errorf("body = %s; want the owner guard, not another 400", rec.Body.String())
 	}
 }
 

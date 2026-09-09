@@ -351,6 +351,24 @@ func (h *Handler) ssoResolveUser(ctx context.Context, claims ssoClaims, workspac
 			INSERT INTO users (id, workspace_id, email, name, iana_timezone, is_admin, is_owner, email_login)
 			VALUES (?, ?, ?, ?, 'UTC', ?, ?, 0)`,
 			userID, workspaceID, email, claims.Name, isAdmin, isOwner); err != nil {
+			// ⛔ The ssoOwnerExists check above is a read, and the INSERT is a write, so
+			// two hand-offs claiming owner on an unowned workspace can both pass it.
+			// idx_users_one_owner_per_workspace decides that case, and losing it means
+			// somebody else became the owner between the read and this statement. Retry
+			// as an admin rather than failing the sign-in: the person is legitimate and
+			// the workspace now has the owner it needed. Failing closed on the ROLE, not
+			// on the request.
+			if isOwner == 1 && db.IsUniqueViolation(err) {
+				h.logger.WarnContext(ctx, "sso: owner bootstrap lost the race; creating as admin",
+					"workspace_id", workspaceID)
+				if _, err := h.db.ExecContext(ctx, `
+					INSERT INTO users (id, workspace_id, email, name, iana_timezone, is_admin, is_owner, email_login)
+					VALUES (?, ?, ?, ?, 'UTC', 1, 0, 0)`,
+					userID, workspaceID, email, claims.Name); err != nil {
+					return "", false, err
+				}
+				return userID, true, nil
+			}
 			return "", false, err
 		}
 		return userID, true, nil
@@ -366,6 +384,15 @@ func (h *Handler) ssoResolveUser(ctx context.Context, claims ssoClaims, workspac
 		if _, err := h.db.ExecContext(ctx,
 			`UPDATE users SET is_owner = 1, is_admin = 1 WHERE workspace_id = ? AND id = ?`,
 			workspaceID, userID); err != nil {
+			// Same race as the create path, decided the same way. The admin half of the
+			// promotion is dropped along with the owner half, which is deliberate: this
+			// branch exists to bootstrap an OWNER, and the claim's role is not otherwise
+			// allowed to rewrite an existing user's permissions (see the doc comment).
+			if db.IsUniqueViolation(err) {
+				h.logger.WarnContext(ctx, "sso: owner bootstrap lost the race; leaving the role alone",
+					"workspace_id", workspaceID)
+				return userID, false, nil
+			}
 			return "", false, err
 		}
 	}

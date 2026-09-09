@@ -174,9 +174,20 @@ func Write(w io.Writer, q Queue) error {
 	b.line("# TYPE calnode_jobs_pending gauge")
 	b.linef("calnode_jobs_pending %d", q.Pending)
 
-	b.line("# HELP calnode_jobs_failed_total Background jobs that exhausted their retries.")
-	b.line("# TYPE calnode_jobs_failed_total counter")
-	b.linef("calnode_jobs_failed_total %d", q.Failed)
+	// ⛔ A gauge, and named without the _total suffix, because the value is
+	// COUNT(*) WHERE status = 'failed' — the size of the failed backlog right now,
+	// exactly like calnode_jobs_pending above it. It goes DOWN when those rows are
+	// cleared or retried.
+	//
+	// It was declared a counter, and the convention is not cosmetic: a counter
+	// promises monotonic growth, so rate() over it is read as failures per second.
+	// Over a value that can fall, rate() drops the decrease as a counter reset and
+	// reports nonsense. A true lifetime failure count would be a separate series
+	// incremented where a job is marked failed, which is a different measurement
+	// from this one rather than a renaming of it.
+	b.line("# HELP calnode_jobs_failed Background jobs that have exhausted their retries and are still in the queue.")
+	b.line("# TYPE calnode_jobs_failed gauge")
+	b.linef("calnode_jobs_failed %d", q.Failed)
 
 	b.line("# HELP calnode_bookings_total Booking lifecycle events since this process started.")
 	b.line("# TYPE calnode_bookings_total counter")

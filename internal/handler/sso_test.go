@@ -159,6 +159,56 @@ func TestSSOHandoff_ownerClaimBootstrapsOnlyWhenUnowned(t *testing.T) {
 	}
 }
 
+// TestSSOHandoff_theDatabaseHoldsTheOneOwnerRule is the half the test above cannot
+// reach.
+//
+// That one drives two hand-offs in sequence, so the second reads an owner that already
+// exists and the sequential logic is enough. It would pass with no constraint at all,
+// and it did: the bootstrap was a read followed by a write with nothing between them,
+// so two SIMULTANEOUS hand-offs could each see no owner and each become one.
+//
+// Concurrency is not what is asserted here, because a test that provokes the interleave
+// reliably is harder to trust than the rule it is testing. What is asserted is the thing
+// that makes the interleave harmless: the database refuses a second live owner, whoever
+// asks and however they got there. If idx_users_one_owner_per_workspace is ever dropped,
+// this fails and the race is back.
+func TestSSOHandoff_theDatabaseHoldsTheOneOwnerRule(t *testing.T) {
+	h, database := newSSOHandler(t)
+
+	first := ssoClaimSet()
+	first["sub"] = "first.owner@example.test"
+	first["role"] = "owner"
+	if rec := doSSO(h, "/v1/auth/sso?token="+ssoToken(t, ssoSecret, first)); rec.Code != http.StatusFound {
+		t.Fatalf("first hand-off: status = %d — %s", rec.Code, rec.Body.String())
+	}
+
+	// Straight past the handler, which is the point: even a caller that has already
+	// decided this workspace has no owner cannot make a second one.
+	_, err := database.Exec(`
+		INSERT INTO users (id, workspace_id, email, name, iana_timezone, is_admin, is_owner, email_login)
+		VALUES ('u-second-owner', 'default', 'rival@example.test', 'Rival', 'UTC', 1, 1, 0)`)
+	if err == nil {
+		t.Fatal("a second live owner was accepted; the one-owner rule is not enforced by the database")
+	}
+	if !db.IsUniqueViolation(err) {
+		t.Fatalf("second owner refused, but not as a unique violation: %v — "+
+			"the handler recognises this case by IsUniqueViolation and would not retry as admin", err)
+	}
+
+	// And the rule is about LIVE owners: archiving the first has to free the seat, or
+	// an archived owner would lock a workspace out of ever having one again.
+	if _, err := database.Exec(
+		`UPDATE users SET archived_at = ? WHERE email = ?`,
+		"2026-06-01T00:00:00Z", "first.owner@example.test"); err != nil {
+		t.Fatalf("archive the first owner: %v", err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO users (id, workspace_id, email, name, iana_timezone, is_admin, is_owner, email_login)
+		VALUES ('u-third-owner', 'default', 'successor@example.test', 'Successor', 'UTC', 1, 1, 0)`); err != nil {
+		t.Errorf("a successor could not be made owner after the first was archived: %v", err)
+	}
+}
+
 // An existing user's role is not rewritten by a hand-off (owner-bootstrap aside).
 func TestSSOHandoff_doesNotDemoteAnExistingUser(t *testing.T) {
 	h, database, _, ownerID := setupWorkspaceWithDB(t)

@@ -167,6 +167,30 @@ func (h *Handler) UpsertWorkspaceUser(w http.ResponseWriter, r *http.Request) {
 	userID := existingID
 	if created {
 		userID = uid.New()
+	}
+
+	// ⛔ The transfer half runs BEFORE the promotion, not after, and the order is load
+	// bearing rather than stylistic. idx_users_one_owner_per_workspace refuses a second
+	// live owner, and a unique INDEX is checked at the end of each statement: it cannot
+	// be deferred to commit, and a PARTIAL unique cannot be written as a deferrable
+	// constraint either. So promoting first would transiently make two owners and be
+	// refused, inside a transaction where the demote that would have fixed it is still
+	// one statement away.
+	//
+	// Demoting first is also what TransferOwnership has always done, so the two routes
+	// that can move ownership now agree. `id <> ?` is what keeps this from demoting the
+	// user about to be promoted; on a create that id does not exist yet, so the clause is
+	// simply true for every current owner.
+	if isOwner == 1 {
+		if _, err := tx.ExecContext(r.Context(),
+			`UPDATE users SET is_owner = 0 WHERE workspace_id = ? AND id <> ?`, workspaceID, userID); err != nil {
+			h.logger.ErrorContext(r.Context(), "platform: demote previous owner", "error", err)
+			h.writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
+
+	if created {
 		// iana_timezone is omitted when the caller sent none, so the column default
 		// ('UTC') applies rather than this route inventing a zone. email_login is omitted
 		// for the same reason: whether a person may sign in with a password is a fact
@@ -220,19 +244,6 @@ func (h *Handler) UpsertWorkspaceUser(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			h.logger.ErrorContext(r.Context(), "platform: update user", "error", err)
-			h.writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-	}
-
-	// The transfer half. Unconditional for role owner, including on a create: whoever held
-	// it is demoted in the same transaction that promotes this one, so the single-owner
-	// invariant TransferOwnership maintains holds after every call to this route as well.
-	// `id <> ?` is what keeps it from demoting the user it just promoted.
-	if isOwner == 1 {
-		if _, err := tx.ExecContext(r.Context(),
-			`UPDATE users SET is_owner = 0 WHERE workspace_id = ? AND id <> ?`, workspaceID, userID); err != nil {
-			h.logger.ErrorContext(r.Context(), "platform: demote previous owner", "error", err)
 			h.writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
