@@ -39,7 +39,7 @@ This guide covers a generic Docker deploy and a step-by-step **Railway** deploy
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | no | — | Google sign-in + calendar. Can also be set in Settings → Google OAuth. |
 | `LITESTREAM_REPLICA_URL` | recommended | — | Enables continuous SQLite backup (see §6). |
 | `COOKIE_SECURE` | no | https→true | Override cookie Secure flag; defaults from `BASE_URL` scheme. |
-| `TRUSTED_PROXY_CIDRS` | no | — | Comma-separated CIDRs (a bare address = one host) whose `CF-Connecting-IP` / `X-Forwarded-For` are believed when keying per-IP rate limits, e.g. `10.0.0.0/8`. Unset ⇒ those headers are ignored and the limit keys on the TCP peer, so behind a fronting CDN every visitor shares one bucket. **Only list networks you control**: anything in the list can name any client IP it likes. |
+| `TRUSTED_PROXY_CIDRS` | no | — | Comma-separated CIDRs (a bare address = one host) whose `X-Forwarded-For` is believed when keying per-IP rate limits, e.g. `10.0.0.0/8`. Include a fronting CDN's own ranges so the walk steps over its edge and lands on the visitor. Unset ⇒ the header is ignored and the limit keys on the TCP peer, so behind a CDN every visitor shares one bucket. **Only list networks you control**: anything in the list can name any client IP it likes. Single-value vendor headers (`CF-Connecting-IP`, `X-Real-IP`) are never read, from any peer. |
 | `FRAME_ANCESTORS` | no | — | **Space**-separated origins allowed to embed the **admin UI** in a frame, e.g. `https://console.example.com 'self'`. Each entry must be `https://host[:port]` or `'self'` — anything else and **the app refuses to start**, because browsers drop a policy they cannot parse. Does not affect the public booking pages, which always deny framing. |
 | `LOG_LEVEL` | no | `info` | `debug`/`info`/`warn`/`error`. |
 | `STT_BASE_URL` | no | `https://api.deepgram.com` | Speech-to-text endpoint **host** for meeting transcription, e.g. a regional endpoint so recording audio stays in one jurisdiction. Host only — the path, model and options are fixed. Shown read-only in Settings → Notetaker as `stt_base_url`. |
@@ -168,7 +168,7 @@ variables cover every provider — only the endpoint/region change:
 
 | Variable | Purpose |
 |---|---|
-| `LITESTREAM_REPLICA_URL` | `s3://<bucket>/calnode` — the bucket + path. Setting this turns backups ON. |
+| `LITESTREAM_REPLICA_URL` | `s3://<bucket>/calnode` — the bucket + path. Setting this turns backups ON. (For native Google Cloud Storage use `gcs://` — see below.) |
 | `LITESTREAM_ENDPOINT` | Provider S3 endpoint. **Leave unset for AWS.** |
 | `LITESTREAM_REGION` | Bucket region (`auto` for R2). |
 | `LITESTREAM_ACCESS_KEY_ID` | Access key (use a bucket-scoped key, not a root credential). |
@@ -193,9 +193,54 @@ Per-provider values (everything else is identical):
 If the endpoint/region are empty or wrong, Litestream silently falls back to **AWS**
 and you'll see `InvalidAccessKeyId` (403) in the logs (your R2 key sent to Amazon).
 
+### Google Cloud Storage (native, not via the S3 API)
+
+The bundled Litestream also speaks **GCS natively**, which is the simpler option on GCP:
+credentials come from the instance metadata server, so there is no access key to create,
+store or rotate. One variable is enough:
+
+| Variable | Value |
+|---|---|
+| `LITESTREAM_REPLICA_URL` | `gcs://<bucket>/calnode` |
+
+- ⛔ **The scheme is `gcs://`, not `gs://`.** `gs://` is the scheme every other Google tool
+  uses, and Litestream rejects it with `unknown replica type in config: ""` and exit 1 —
+  before any network call, so it looks nothing like a credentials or bucket problem.
+- **Leave `LITESTREAM_ENDPOINT`, `LITESTREAM_REGION`, `LITESTREAM_ACCESS_KEY_ID` and
+  `LITESTREAM_SECRET_ACCESS_KEY` unset.** The bundled `/etc/litestream.yml` needs no edit:
+  its `endpoint:` and `region:` lines expand to empty strings, and a `gcs` replica ignores
+  both.
+- The service account attached to the instance needs read **and** write on the bucket
+  (read is what restore uses). Everything else on this page — the restore drill, the
+  private-bucket warning, the PII note — applies unchanged.
+
+⚠️ **The trade: meeting recordings need the two S3 credential variables, so a native GCS
+replica leaves recording storage unavailable.** `recordingStorage()`
+(`internal/handler/livekit_recording.go`) reuses the backup bucket for recordings over the
+S3 API and requires `LITESTREAM_ACCESS_KEY_ID` and `LITESTREAM_SECRET_ACCESS_KEY`; without
+both it reports not-configured. It degrades cleanly rather than failing at record time —
+**Settings → Storage** shows `recordings_storage_ready: false` and the room's Record button
+stays hidden.
+
+The provider table above has no GCS row, so "use the S3-compatible route" is not by itself
+an answer on GCP. The two real options:
+
+- **Put the replica on an S3-API bucket** (R2, B2, AWS, MinIO — the providers above) and
+  set all five variables. This is the route this page documents end to end.
+- **Or reach the same GCS bucket through Google's S3 interoperability API**: an HMAC key
+  pair as `LITESTREAM_ACCESS_KEY_ID` / `LITESTREAM_SECRET_ACCESS_KEY`,
+  `LITESTREAM_ENDPOINT=https://storage.googleapis.com`, and an `s3://` replica URL. That is
+  the ordinary S3-compatible route with GCS as the provider, not the native `gcs://` one.
+  ⚠️ We have not exercised recording this way — we run native `gcs://` with recordings off —
+  so it is stated as the shape of the answer, not as a configuration we have verified.
+
+`docs/VIDEO.md` §2 lists exactly what recording needs from either route.
+
 ### Enabling it
 1. Create a **private** bucket and a **bucket-scoped** access key (read + write — read is needed for restore).
-2. Set the five variables on the service (Railway → Variables, or your platform's equivalent).
+   *(Native GCS: create the bucket and grant the instance's service account read + write; there is no key.)*
+2. Set the five variables on the service (Railway → Variables, or your platform's
+   equivalent) — or, for native GCS, just `LITESTREAM_REPLICA_URL`.
 3. Redeploy. On boot Litestream initialises and the first snapshot uploads within ~10s.
 4. **Verify the round-trip** before relying on it (below).
 

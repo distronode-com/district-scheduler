@@ -71,18 +71,50 @@ exact tag (`ghcr.io/calnode/calnode:0.1.0`) if you need stability between upgrad
   unset. And no `X-Frame-Options` is sent beside it: that header has no allow-list form,
   so the only value it could carry is `SAMEORIGIN`, which browsers honour instead of the
   CSP and would break the embedding this exists for.
+- **Duplicate an event type.** `POST /v1/event-types/{slug}/duplicate`, and a Duplicate
+  action on each row of the event-types list. Closes
+  [#17](https://github.com/Calnode/calnode/issues/17).
+
+  The copy carries everything that hangs off the original - intake questions, host
+  assignments, event-type-specific availability rules, the reminder schedule, and the
+  custom email subjects and notes - as a single transaction, so a half-built copy can
+  never be left behind. It is created inactive, under a generated `<slug>-copy` (then
+  `-copy-2`, `-copy-3`, …) slug, and keeps `price_cents`/`currency` verbatim: zeroing a
+  copied price is how a paid meeting quietly starts selling for nothing. Bookings are not
+  copied.
+- **Empty days and minimum-notice gaps now explain themselves** on all three booking
+  surfaces (booking page, manage/reschedule page, embed widget). Closes
+  [#20](https://github.com/Calnode/calnode/issues/20).
+
+  A day with nothing on it names the day, and the host when the event type has exactly
+  one, instead of the bare "No available times." that never said whether another day would
+  help. And when `min_notice_minutes` is what removed the nearest starts, the surfaces say
+  so rather than leaving the visitor to guess - the most common "why can't I see those
+  times".
+
+  The engine decides that, not the front ends: `GET /slots` gains
+  `min_notice: {minutes, dates}` listing the booker-local days the policy actually cost
+  something. A start that is simply in the past, one a booking took away, and one no host
+  pool could satisfy are all excluded, so the explanation never appears attached to the
+  wrong cause. Three new/changed keys in all eight locales.
+
 
 - **`TRUSTED_PROXY_CIDRS`: per-IP rate limits that work behind a CDN.** Rate limits key
   on the TCP peer, which is right for a directly-reachable instance and useless behind a
   fronting CDN, where every visitor arrives from the same handful of addresses and shares
-  one bucket. List the networks you control and the client IP is taken from
-  `CF-Connecting-IP`, or from `X-Forwarded-For` walked right to left past your own hops.
+  one bucket. List the networks you control, a fronting CDN's own ranges included, and
+  the client IP is taken from `X-Forwarded-For` walked right to left past those hops.
 
   Nothing changes if you do not set it: a header from a peer you have not listed is still
   not read at all, because it is a value the client chose. Within the header the *leftmost*
   entry is likewise client-chosen, so the walk stops at the rightmost address one of your
   proxies actually observed, and a malformed hop ends the walk on the peer rather than
-  being stepped over.
+  being stepped over. Repeated `X-Forwarded-For` field lines are joined in order rather
+  than only the first being read, so a client's own line in front of a proxy that adds a
+  second one cannot hide the hop that matters. Single-value vendor headers (`CF-Connecting-IP`, `X-Real-IP`,
+  `True-Client-IP`) are never read, from any peer: the setting names networks rather than
+  CDNs, and a plain reverse proxy in the list forwards whatever the client sent.
+
 
 - **Sign out everywhere.** `POST /v1/auth/sessions/revoke-all` ends every session you
   have except the one you asked from, so losing a laptop no longer means waiting out a
@@ -112,6 +144,25 @@ exact tag (`ghcr.io/calnode/calnode:0.1.0`) if you need stability between upgrad
   Google account. On creation the claimed role is applied; for someone who already
   exists the role is left alone, except that a claim asking for `owner` bootstraps
   ownership when the instance has none. Archived accounts are still refused.
+
+### Fixed
+- **Constraint violations are recognised by SQLite's error code rather than by its
+  English message.** Thirteen call sites asked `strings.Contains(err.Error(), "UNIQUE
+  constraint failed")`, and SQLite reports a PRIMARY KEY collision
+  (`SQLITE_CONSTRAINT_PRIMARYKEY`, 1555) with that exact message while giving it a
+  different code from an ordinary unique violation (`SQLITE_CONSTRAINT_UNIQUE`, 2067).
+  The text could not tell the two apart, so nothing that needed to distinguish them
+  could.
+
+  `db.IsUniqueViolation`, `db.IsCheckViolation` and `db.IsForeignKeyViolation` answer
+  from the driver's code, falling back to the message only for an error that arrives
+  without its driver type still attached. A driver error whose code does not match is a
+  definite no rather than a fall-through, so an error cannot be classified by whether
+  its text happened to contain an English phrase.
+
+  Each class is provoked against the real schema in a test rather than constructed by
+  hand, including the primary-key case, which is the one a code match written from the
+  message alone would get wrong.
 
 ## [0.8.0] - 2026-09-03
 

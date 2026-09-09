@@ -162,7 +162,7 @@ func (s *Service) Create(ctx context.Context, p CreateParams) (*Booking, error) 
 		VALUES (?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)`,
 		bookingID, p.EventTypeID, chosenHost, startStr, endStr, p.LocationValue, now, now)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if db.IsUniqueViolation(err) {
 			return nil, ErrDoubleBooked
 		}
 		return nil, fmt.Errorf("booking: insert: %w", err)
@@ -519,7 +519,7 @@ func (s *Service) Reschedule(ctx context.Context, bookingID string, newStart, ne
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE bookings SET start_at = ?, end_at = ?, updated_at = ? WHERE id = ?`,
 		startStr, endStr, now, bookingID); err != nil {
-		if isUniqueViolation(err) {
+		if db.IsUniqueViolation(err) {
 			return nil, ErrDoubleBooked
 		}
 		return nil, fmt.Errorf("booking: reschedule update: %w", err)
@@ -583,7 +583,7 @@ func (s *Service) ReassignHost(ctx context.Context, bookingID, newHostID string)
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE bookings SET host_id = ?, updated_at = ? WHERE id = ?`,
 		newHostID, now, bookingID); err != nil {
-		if isUniqueViolation(err) {
+		if db.IsUniqueViolation(err) {
 			return nil, ErrDoubleBooked
 		}
 		return nil, fmt.Errorf("booking: reassign update: %w", err)
@@ -694,12 +694,3 @@ func scanBooking(s scanner) (*Booking, error) {
 	}
 	return &b, nil
 }
-
-// isUniqueViolation reports whether err is a unique-constraint violation — on this
-// booking path, idx_bookings_no_double rejecting an exact start-time collision that
-// the app-level overlap check did not catch.
-//
-// A thin wrapper over db.IsUniqueViolation, kept only because three call sites read
-// better with the local name and the doc comment above belongs to this path rather
-// than to the shared helper.
-func isUniqueViolation(err error) bool { return db.IsUniqueViolation(err) }

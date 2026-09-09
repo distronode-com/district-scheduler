@@ -492,17 +492,26 @@ func TrustClientIP(trusted []*net.IPNet) func(http.Handler) http.Handler {
 // CIDR. A header from an untrusted peer is never read at all — that is the whole point,
 // and it is why the default (no trusted proxies) cannot be weakened by a header.
 //
-// Preference order for a trusted peer:
+// For a trusted peer the answer comes from X-Forwarded-For, walked RIGHT TO LEFT past
+// trusted hops, returning the first untrusted address. ⛔ Not the leftmost entry: the
+// left of that header is whatever the original client sent, so a client that pre-seeds
+// "X-Forwarded-For: 1.2.3.4" gets it prepended and preserved by every well-behaved
+// proxy. The rightmost non-trusted hop is the last address a trusted proxy actually
+// observed, which is the only one in the header that anything vouched for. The peer is
+// the answer whenever the header is absent or unusable.
 //
-//  1. CF-Connecting-IP, which a single fronting CDN sets to one value and does not append
-//     to, so there is no chain to reason about.
-//  2. X-Forwarded-For, walked RIGHT TO LEFT past trusted hops, returning the first
-//     untrusted address. ⛔ Not the leftmost entry: the left of that header is whatever
-//     the original client sent, so a client that pre-seeds "X-Forwarded-For: 1.2.3.4"
-//     gets it prepended and preserved by every well-behaved proxy. The rightmost
-//     non-trusted hop is the last address a trusted proxy actually observed, which is the
-//     only one in the header that anything vouched for.
-//  3. The peer, whenever the headers are absent or unusable.
+// ⛔ Single-value vendor headers (CF-Connecting-IP, X-Real-IP, True-Client-IP) are NOT
+// consulted, and that is deliberate rather than an omission. Trusting one means
+// trusting it from every peer in the list, and the list is a list of *networks* rather
+// than a list of CDNs: an ordinary reverse proxy inside it forwards whatever headers
+// the client sent, so a client could name its own rate-limit bucket by sending one. The
+// header carries nothing that says which hop set it, so there is no way to tell the
+// value a CDN wrote from the value a visitor typed.
+//
+// Nothing is lost by leaving them out. A CDN sets X-Forwarded-For as well, and its own
+// ranges belong in TRUSTED_PROXY_CIDRS anyway, so the walk steps over its edge address
+// and lands on the visitor. That is the same answer the vendor header would have given,
+// reached without having to believe a header for a reason the code cannot check.
 //
 // A hop that does not parse ends the walk and falls back to the peer rather than being
 // skipped. Skipping it would let a client inject one malformed entry to push the walk
@@ -515,13 +524,14 @@ func resolveClientIP(r *http.Request, trusted []*net.IPNet) string {
 		return peer
 	}
 
-	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
-		if ip := net.ParseIP(cf); ip != nil {
-			return ip.String()
-		}
-	}
-
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+	// ⛔ Values, not Get. A header may arrive as several field lines, and Get returns
+	// only the FIRST. A client that sends its own "X-Forwarded-For: 1.2.3.4" followed by
+	// a proxy that ADDS a line rather than appending to the existing one leaves two
+	// lines, and Get would hand the walk the client's line alone — no trusted hop in it,
+	// so the walk returns the client's chosen address on its first step. RFC 9110 says
+	// repeated field lines are equivalent to one comma-joined value in the order
+	// received, so joining them is both correct and what the walk already assumes.
+	if xff := strings.Join(r.Header.Values("X-Forwarded-For"), ","); xff != "" {
 		hops := strings.Split(xff, ",")
 		for i := len(hops) - 1; i >= 0; i-- {
 			ip := net.ParseIP(strings.TrimSpace(hops[i]))

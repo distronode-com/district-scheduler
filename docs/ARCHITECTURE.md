@@ -429,12 +429,55 @@ in discussion #14, issue #19.
 - **`taken` is absent, not empty, when off** - a client must distinguish "does not show
   taken times" from "opted in, nothing booked today".
 - **Client side:** `mergeDaySlots` and `bookableDayKeys` in the shared
-  `assets/booking-logic.js`, so all three surfaces share one implementation. Free and
+  `assets/booking-logic.js`, inlined into book.html and manage.html. **The embed widget
+  does not load that module** - `EmbedJS` serves `embed.js` as standalone bytes, so
+  `BookingLogic` is undefined inside it and it carries its own copies of the helpers it
+  needs (a test asserts it never calls into `BookingLogic`). Free and
   taken stay separate on the wire and are combined only for display. `bookableDayKeys`
   exists for a specific trap: once taken slots are grouped by day too, a fully booked
   day still produces a key, and using those keys for the calendar would advertise it as
   having something available. Fully booked days *are* still openable, deliberately - a
   list of struck-through times explains itself better than a dead date.
+
+### Explaining an empty day, and the minimum-notice gap
+
+Two silences on the booker-facing surfaces, issue #20. A day with nothing on it used to
+render a bare "No available times.", which does not say whether another day would help;
+and `min_notice_minutes` removes the nearest starts with nothing left behind to explain
+them - the most common "why can't I see those times".
+
+- **The empty-day message names the day, and the host when there is one.**
+  `no_available_times` takes the date; `no_available_times_host` adds the host. The host
+  is named only when the event type (or, on manage, the booking) has exactly ONE -
+  `HostsLabel` can be "Alex, Sam & 2 others", which cannot be the subject of that
+  sentence in any shipped locale. `SoleHostName` on both page data structs is empty
+  otherwise, and the surfaces fall back to the date-only form.
+- **The notice gap is computed server-side, in the engine that already knows it.**
+  `slots.GenerateDetailed(req, slots.Extras{NoticeGap: true})` reports the starts the
+  notice rule removed. Collected during the main walk (the cutoff is evaluated there
+  anyway), not by a second pass like `taken`.
+- **Two exclusions keep the attribution honest.** A start already in the past is never
+  reported - it would have gone with no policy at all, and blaming the policy would put
+  the message on every event type by dinnertime. And busy intervals are applied on the
+  way in, so a start a booking took away is never reported either: `NoticeGap` and
+  `Taken` are therefore disjoint, and no start is ever explained two ways. Routing rules
+  are applied to the withheld starts too, so a start no host pool could satisfy is not
+  blamed on the policy.
+- **The wire carries days, not times.** `GET /slots` returns
+  `min_notice: {minutes, dates}`, where `dates` are booker-local `YYYY-MM-DD` keys
+  matching what the surfaces group slots by. Sending the individual withheld times would
+  describe the host's working hours at a finer grain than the feature needs. Absent when
+  the event type sets no minimum notice, present-with-empty-`dates` when it set one that
+  cost this range nothing - the same distinction `taken` draws.
+- **The label is server-rendered.** `MinNoticeLabel` on the book/manage page data and
+  `min_notice_label` on `GET /public` (for the widget), both via `durationLabel`, because
+  the `/slots` call the surfaces make carries no `?lang=` - a label derived from its
+  response would silently ignore a language override. `minutes` still travels for clients
+  with no label of their own.
+- **Where it renders.** On the day itself when that day lost starts, whether or not times
+  remain (a day showing 2pm onwards but nothing this morning is exactly the case in the
+  issue), and *also* in the "pick a day" state, because a day the policy emptied
+  completely is greyed out in the calendar and cannot be clicked for an explanation.
 
 ---
 
@@ -826,13 +869,20 @@ as the desired state:
   fine for a per-instance Fly/Railway deploy, worth knowing for a fronting CDN.
   **`TRUSTED_PROXY_CIDRS`** (comma-separated CIDRs, a bare address meaning one host)
   opts in per network: for a peer inside one of those ranges, `TrustClientIP`
-  (`internal/server/middleware.go`) resolves the client IP from `CF-Connecting-IP` if
-  present, else by walking `X-Forwarded-For` **right to left past trusted hops** and
-  taking the first untrusted address, else the peer. ⛔ Not the leftmost entry: the left
+  (`internal/server/middleware.go`) resolves the client IP by walking `X-Forwarded-For`
+  **right to left past trusted hops** and taking the first untrusted address, else the
+  peer. Single-value vendor headers (`CF-Connecting-IP`, `X-Real-IP`, `True-Client-IP`)
+  are never consulted, even from a trusted peer: the list names *networks*, not CDNs, so
+  an ordinary reverse proxy in it forwards whatever the client sent, and the header
+  itself carries nothing that says which hop wrote it. A CDN sets `X-Forwarded-For` too
+  and its own ranges belong in the list, so the walk reaches the same visitor without
+  believing a header for a reason the code cannot check. ⛔ Not the leftmost entry: the left
   of that header is whatever the original client sent, and every well-behaved proxy
   preserves it. A hop that does not parse ends the walk and falls back to the peer rather
   than being skipped, so one malformed entry cannot push the walk onto a value the client
-  chose. Headers from an **untrusted** peer are never read, which is what keeps the
+  chose. `X-Forwarded-For` is read as **every** field line joined in order, not just the
+  first, because a client's own line in front of a proxy that adds a second one would
+  otherwise be the only thing the walk saw. Headers from an **untrusted** peer are never read, which is what keeps the
   default un-weakenable by a header. Resolution happens once, in the outermost
   middleware, and is carried in the request context.
 

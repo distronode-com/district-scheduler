@@ -277,10 +277,11 @@ claims:
   - id: rate-limit-keys-on-tcp-source-address
     claim: >
       Per-IP rate limiting (internal/server/middleware.go's RateLimit) keys on the
-      TCP-level remote address of the connection, and never on client-supplied
-      X-Forwarded-For/X-Real-IP/CF-Connecting-IP headers unless the peer that sent
-      them is inside an operator-configured TRUSTED_PROXY_CIDRS range — so a client
-      cannot spoof those headers to evade or split its rate-limit bucket.
+      TCP-level remote address of the connection, and never on a client-supplied
+      X-Forwarded-For unless the peer that sent it is inside an operator-configured
+      TRUSTED_PROXY_CIDRS range — so a client cannot spoof headers to evade or split
+      its rate-limit bucket. Single-value vendor headers (X-Real-IP,
+      CF-Connecting-IP, True-Client-IP) are never read, from any peer.
     verify:
       - "internal/server/middleware.go's remoteIP — net.SplitHostPort(r.RemoteAddr)
          via peerIP, unless TrustClientIP has resolved a client IP into the request
@@ -291,8 +292,9 @@ claims:
          and X-Real-IP are ignored even when RemoteAddr is loopback."
       - "internal/server/trustedproxy_test.go — asserts an untrusted peer's spoofed
          headers are ignored, that the X-Forwarded-For walk goes right-to-left past
-         trusted hops (never the client-seeded leftmost entry), and that a malformed
-         header falls back to the peer."
+         trusted hops (never the client-seeded leftmost entry), that a malformed
+         header falls back to the peer, and that a vendor header is ignored even from
+         a TRUSTED peer."
     status: verified
     caveat: >
       Recorded here because a prior Layer 2 audit pass flagged this as trusting

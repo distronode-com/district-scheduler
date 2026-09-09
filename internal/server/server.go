@@ -578,6 +578,7 @@ func New(ctx context.Context, cfg *config.Config, db *db.DB, logger *slog.Logger
 	mux.HandleFunc("GET /v1/event-types/{slug}", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).GetEventType)))
 	mux.HandleFunc("PATCH /v1/event-types/{slug}", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).PatchEventType)))
 	mux.HandleFunc("DELETE /v1/event-types/{slug}", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).DeleteEventType)))
+	mux.HandleFunc("POST /v1/event-types/{slug}/duplicate", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).DuplicateEventType)))
 	mux.HandleFunc("GET /v1/event-types/{slug}/hosts", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).ListEventTypeHosts)))
 	mux.HandleFunc("PUT /v1/event-types/{slug}/hosts", h.RequireAuth(h.Scoped(handler.CredentialWorkspace, (*H).SetEventTypeHosts)))
 	testEmailRL := RateLimit(10, time.Minute)

@@ -52,14 +52,69 @@ func TestTrustClientIP_noTrustedProxiesIsUnchanged(t *testing.T) {
 	}
 }
 
-func TestTrustClientIP_trustedPeerUsesCFConnectingIP(t *testing.T) {
-	got := serveThroughTrust(t, []string{"10.0.0.0/8"}, "10.0.0.5:1234", map[string]string{
-		"CF-Connecting-IP": "198.51.100.7",
-		// CF-Connecting-IP wins over the chain: one fronting CDN sets it to one value.
-		"X-Forwarded-For": "198.51.100.99, 10.0.0.5",
-	})
+// ⛔ Single-value vendor headers are ignored even from a TRUSTED peer, and this is the
+// case that says why. Trusting one means trusting it from every network in the list,
+// and an ordinary reverse proxy in that list forwards whatever headers the client sent.
+// If CF-Connecting-IP were preferred, the client below would have chosen its own
+// rate-limit key by sending one header, which is exactly the spoof the right-to-left
+// walk exists to prevent.
+//
+// The chain is what is believed: 10.0.0.9 is one of ours, so the walk steps over it and
+// stops at 198.51.100.7, the address our outermost proxy actually observed.
+func TestTrustClientIP_ignoresVendorHeadersFromATrustedPeer(t *testing.T) {
+	for _, header := range []string{"CF-Connecting-IP", "X-Real-IP", "True-Client-IP"} {
+		t.Run(header, func(t *testing.T) {
+			got := serveThroughTrust(t, []string{"10.0.0.0/8"}, "10.0.0.5:1234", map[string]string{
+				header:            "1.2.3.4",
+				"X-Forwarded-For": "198.51.100.7, 10.0.0.9",
+			})
+			if got != "198.51.100.7" {
+				t.Errorf("client IP = %q; want 198.51.100.7 from the chain, never %s", got, header)
+			}
+		})
+	}
+}
+
+// And with no X-Forwarded-For to fall back on, a vendor header still buys the client
+// nothing: the answer is the peer, not the address the client named.
+func TestTrustClientIP_vendorHeaderAloneFallsBackToThePeer(t *testing.T) {
+	got := serveThroughTrust(t, []string{"10.0.0.0/8"}, "10.0.0.5:1234",
+		map[string]string{"CF-Connecting-IP": "1.2.3.4"})
+	if got != "10.0.0.5" {
+		t.Errorf("client IP = %q; want the peer 10.0.0.5", got)
+	}
+}
+
+// ⛔ X-Forwarded-For can arrive as SEVERAL field lines, and Header.Get returns only the
+// first one.
+//
+// A client that sends its own X-Forwarded-For, in front of a proxy that ADDS a line
+// rather than appending to the existing one, produces exactly this: line 1 is the
+// client's, line 2 is the proxy's. Reading only line 1 hands the walk a chain with no
+// trusted hop in it, so it returns the client's chosen address on the first step and the
+// client has named its own rate-limit bucket. RFC 9110 makes repeated field lines
+// equivalent to one comma-joined value in order, which is what the walk needs.
+//
+// This uses Add rather than the shared helper on purpose: the helper calls Set, which
+// collapses everything to one line and cannot express the case.
+func TestTrustClientIP_joinsRepeatedForwardedForLines(t *testing.T) {
+	trusted, err := ParseTrustedProxies([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+	var got string
+	h := TrustClientIP(trusted)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		got = remoteIP(r)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.5:1234"
+	req.Header.Add("X-Forwarded-For", "1.2.3.4")                // the client's own line
+	req.Header.Add("X-Forwarded-For", "198.51.100.7, 10.0.0.9") // what our proxies observed
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
 	if got != "198.51.100.7" {
-		t.Errorf("client IP = %q; want 198.51.100.7", got)
+		t.Errorf("client IP = %q; want 198.51.100.7 — with only the first field line read, "+
+			"the client's own 1.2.3.4 becomes the rate-limit key", got)
 	}
 }
 

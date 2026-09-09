@@ -154,9 +154,10 @@ type Config struct {
 
 	// TrustedProxyCIDRs lists the networks whose forwarded headers are believed when
 	// resolving the client IP for per-IP rate limiting. Empty (the default) ⇒ the limit
-	// keys on the TCP peer and CF-Connecting-IP / X-Forwarded-For are ignored entirely,
-	// because a header from an unvetted peer is a client-chosen value. Comma-separated
-	// CIDRs; a bare address is taken as a single host.
+	// keys on the TCP peer and X-Forwarded-For is ignored entirely, because a header
+	// from an unvetted peer is a client-chosen value. Comma-separated CIDRs; a bare
+	// address is taken as a single host. A fronting CDN's own ranges belong here: the
+	// walk steps over its edge address and lands on the visitor.
 	TrustedProxyCIDRs []string
 
 	// FrameAncestors lists the origins allowed to embed the admin SPA in a frame, as a

@@ -809,7 +809,7 @@ func (h *Handler) CreateBooking(w http.ResponseWriter, r *http.Request) {
 		}
 		// A question was deleted between validateAnswers and the INSERT — return a
 		// clean 422 rather than leaking a generic 500 for an FK constraint failure.
-		if isForeignKeyViolation(err) {
+		if db.IsForeignKeyViolation(err) {
 			h.writeError(w, http.StatusUnprocessableEntity, "one or more questions are no longer available")
 			return
 		}
@@ -1862,10 +1862,6 @@ func (h *Handler) loadHostPrefs(ctx context.Context, hostID string) (hostPrefs, 
 	p.NotifyHostBooking, p.NotifyHostCancel, p.NotifyHostReschedule = nhb != 0, nhc != 0, nhr != 0
 	return p, nil
 }
-
-// isForeignKeyViolation reports whether err is a foreign-key violation, on either
-// engine. A thin wrapper so the two call sites keep reading as a local predicate.
-func isForeignKeyViolation(err error) bool { return db.IsForeignKeyViolation(err) }
 
 // enqueueReminder inserts a reminder.send job scheduled hoursBefore hours before startAt.
 // If the computed run_at has already passed, the job fires on the next poll cycle.
