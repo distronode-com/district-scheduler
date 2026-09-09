@@ -345,6 +345,15 @@ func (c *Config) Validate() error {
 		return errors.New("DATABASE_ADMIN_URL must differ from DATABASE_URL — " +
 			"the application role must not own the tables or its row-level-security policies do not apply to it")
 	}
+	// docs/MULTI_TENANT.md states the secret is required when social login is
+	// configured, because a multi-tenant OAuth callback finishes by minting a
+	// hand-off token rather than by setting a cookie directly. Nothing enforced it,
+	// so the process booted and the failure arrived later, in mintSSOToken, on a
+	// real person's sign-in attempt. Boot is the right place to find out.
+	if c.SSOSharedSecret == "" && (c.GoogleClientID != "" || c.MicrosoftClientID != "") {
+		return errors.New("MULTI_TENANT with Google or Microsoft login requires CALNODE_SSO_SHARED_SECRET — " +
+			"the OAuth callback completes by minting a session hand-off token, which cannot be signed without it")
+	}
 	// Demo mode wipes and re-seeds the whole database every DemoResetInterval.
 	// Against a multi-tenant database that is every tenant's data.
 	if c.DemoMode {

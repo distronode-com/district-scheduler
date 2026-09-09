@@ -95,6 +95,19 @@ func TestValidate_multiTenantRefusals(t *testing.T) {
 			mutate:  func(c *config.Config) { c.DemoMode = true },
 			wantSub: "mutually exclusive",
 		},
+		{
+			// A multi-tenant OAuth callback finishes by minting a hand-off token
+			// rather than setting a cookie, so without the secret the process boots
+			// happily and the failure surfaces on somebody's sign-in.
+			name:    "google login without the hand-off secret",
+			mutate:  func(c *config.Config) { c.GoogleClientID = "google-client-id" },
+			wantSub: "CALNODE_SSO_SHARED_SECRET",
+		},
+		{
+			name:    "microsoft login without the hand-off secret",
+			mutate:  func(c *config.Config) { c.MicrosoftClientID = "microsoft-client-id" },
+			wantSub: "CALNODE_SSO_SHARED_SECRET",
+		},
 	}
 
 	for _, tc := range cases {
@@ -114,6 +127,24 @@ func TestValidate_multiTenantRefusals(t *testing.T) {
 				t.Errorf("Validate() = %q; want it to mention %q", err, tc.wantSub)
 			}
 		})
+	}
+}
+
+// TestValidate_multiTenantOAuthWithTheSecretIsFine is the other half of the two
+// cases above: the rule is "social login needs the secret", not "social login is
+// refused", so a configuration that supplies both has to pass. Without this, the
+// refusal could be tightened into a ban and nothing would notice.
+func TestValidate_multiTenantOAuthWithTheSecretIsFine(t *testing.T) {
+	cfg := &config.Config{
+		MultiTenant:       true,
+		DatabaseURL:       appDSN,
+		DatabaseAdminURL:  adminDSN,
+		GoogleClientID:    "google-client-id",
+		MicrosoftClientID: "microsoft-client-id",
+		SSOSharedSecret:   "a-shared-secret",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() = %v; social login with the hand-off secret set is a supported configuration", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
@@ -66,8 +67,21 @@ func (h *Handler) platformAuthorized(w http.ResponseWriter, r *http.Request) boo
 		http.NotFound(w, r)
 		return false
 	}
-	presented := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if subtle.ConstantTimeCompare([]byte(presented), []byte(h.platformToken)) != 1 {
+	// Require the scheme before comparing, then compare SHA-256 digests rather than the
+	// raw strings. subtle.ConstantTimeCompare returns early when the lengths differ, so
+	// comparing directly would let a caller learn the platform token's length by timing
+	// probes of different lengths. Hashing makes both sides 32 bytes whatever was sent.
+	// Same shape as metricsBearerValid; this is the credential that provisions tenants,
+	// so it should not be the weaker of the two.
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		h.logger.WarnContext(r.Context(), "platform api: bad token", "path", r.URL.Path)
+		h.writeError(w, http.StatusUnauthorized, "invalid platform token")
+		return false
+	}
+	presented := sha256.Sum256([]byte(strings.TrimPrefix(auth, "Bearer ")))
+	expected := sha256.Sum256([]byte(h.platformToken))
+	if subtle.ConstantTimeCompare(presented[:], expected[:]) != 1 {
 		h.logger.WarnContext(r.Context(), "platform api: bad token", "path", r.URL.Path)
 		h.writeError(w, http.StatusUnauthorized, "invalid platform token")
 		return false
