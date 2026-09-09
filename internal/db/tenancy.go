@@ -60,11 +60,30 @@ var TenantTables = []string{
 	"zoom_connections",
 }
 
-// ExemptTables lists the tables that deliberately have no workspace_id.
+// ReadOnlyTables lists the tables that have no workspace_id and are nonetheless
+// under row-level security, because "every role may read this, only the platform
+// role may write it" is itself a policy and something has to enforce it.
 //
-//   - workspaces is the tenant root. It carries its own SELECT-only policy for
-//     the application role instead: the host resolver, the suspended check and
-//     publicURL all read it, and only the platform role writes it.
+// Today that is workspaces, the tenant root. The host resolver, the suspended check
+// and publicURL all read it on the application handle, and every write to it is on
+// a Platform-wrapped route or at boot, both of which hold the platform handle.
+//
+// ⛔ ENABLE, never FORCE. FORCE applies a table's policies to its OWNER as well, and
+// the owner here is the platform role — the one role that must be able to write the
+// table. Forcing it would leave nothing able to create a workspace. The application
+// role is not the owner, so ENABLE alone is what constrains it.
+//
+// ⚠️ The policy for these lives in migration 00060 and is SELECT-only, so a table
+// listed here and given no write policy is readable by everyone and writable only by
+// the owner and by BYPASSRLS roles. Adding a table here without checking its policies
+// would silently make it read-only for the application.
+var ReadOnlyTables = []string{
+	"workspaces",
+}
+
+// ExemptTables lists the tables that deliberately have no workspace_id and no
+// row-level security at all.
+//
 //   - crypto_keystore holds the wrapped DEK, and there is one DEK per process
 //     (ARCHITECTURE §5). Per-tenant DEKs are a later hardening.
 //   - goose_db_version is migration bookkeeping.
@@ -83,7 +102,6 @@ var ExemptTables = []string{
 	"goose_db_version",
 	"oauth_clients",
 	"sso_nonces",
-	"workspaces",
 }
 
 // EnableRLS turns row-level security on, and forces it, for every tenant table.
@@ -144,6 +162,15 @@ func (h *DB) EnableRLS(ctx context.Context) error {
 		}
 		if _, err := h.DB.ExecContext(ctx, `ALTER TABLE `+table+` FORCE ROW LEVEL SECURITY`); err != nil {
 			return fmt.Errorf("force row level security on %s: %w", table, err)
+		}
+	}
+	// ENABLE without FORCE — see ReadOnlyTables. Without this the SELECT-only policy
+	// migration 00060 creates on workspaces is inert, because a policy on a table whose
+	// row-level security is off does nothing at all, and the application role's DML
+	// grant on the tenant root would be unopposed.
+	for _, table := range ReadOnlyTables {
+		if _, err := h.DB.ExecContext(ctx, `ALTER TABLE `+table+` ENABLE ROW LEVEL SECURITY`); err != nil {
+			return fmt.Errorf("enable row level security on %s: %w", table, err)
 		}
 	}
 	return nil

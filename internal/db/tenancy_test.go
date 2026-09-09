@@ -40,11 +40,12 @@ func TestTenancy_tableListsCoverTheSchema(t *testing.T) {
 	}
 
 	classified := append(slices.Clone(db.TenantTables), db.ExemptTables...)
+	classified = append(classified, db.ReadOnlyTables...)
 	slices.Sort(classified)
 
 	for _, table := range live {
 		if !slices.Contains(classified, table) {
-			t.Errorf("table %q is in neither db.TenantTables nor db.ExemptTables — classify it (and give it a workspace_id if it is a tenant table)", table)
+			t.Errorf("table %q is in none of db.TenantTables, db.ReadOnlyTables or db.ExemptTables — classify it (and give it a workspace_id if it is a tenant table)", table)
 		}
 	}
 	for _, table := range classified {
@@ -55,7 +56,8 @@ func TestTenancy_tableListsCoverTheSchema(t *testing.T) {
 	if got, want := len(classified), len(live); got != want {
 		t.Errorf("classified %d tables, schema has %d", got, want)
 	}
-	t.Logf("classified %d tables: %d tenant, %d exempt", len(live), len(db.TenantTables), len(db.ExemptTables))
+	t.Logf("classified %d tables: %d tenant, %d read-only, %d exempt",
+		len(live), len(db.TenantTables), len(db.ReadOnlyTables), len(db.ExemptTables))
 }
 
 // TestPostgres_tenantColumnShape asserts D1 for every tenant table at once: the
@@ -296,7 +298,89 @@ func TestPostgres_rlsIsOffUntilEnabled(t *testing.T) {
 			t.Errorf("exempt table %s had row-level security enabled (enabled=%v forced=%v)", table, f.enabled, f.forced)
 		}
 	}
-	t.Logf("EnableRLS turned on %d tenant tables and left %d exempt ones alone", len(db.TenantTables), len(db.ExemptTables))
+	// ⛔ Enabled but NOT forced, and both halves matter. Without ENABLE the SELECT-only
+	// policy on the tenant root is inert and the application role's DML grant is
+	// unopposed. With FORCE the policy would apply to the table's owner too, which is
+	// the platform role, and nothing could create a workspace at all.
+	for _, table := range db.ReadOnlyTables {
+		f := after[table]
+		if !f.enabled {
+			t.Errorf("read-only table %s: row-level security is off, so its policy is inert", table)
+		}
+		if f.forced {
+			t.Errorf("read-only table %s is FORCEd, which locks the platform role out of its own table", table)
+		}
+	}
+	t.Logf("EnableRLS turned on %d tenant tables, enabled %d read-only ones and left %d exempt ones alone",
+		len(db.TenantTables), len(db.ReadOnlyTables), len(db.ExemptTables))
+}
+
+// TestPostgres_appRoleCannotWriteTheTenantRoot is the reason the table above is not
+// simply exempt.
+//
+// The comment on ReadOnlyTables claims the application role can read workspaces and
+// only the platform role can write it. That was asserted in prose and enforced by
+// nothing: the operator checklist grants the application role DML on every table in
+// the schema, and while workspaces carried no row-level security its SELECT-only
+// policy did nothing. This holds the claim instead of restating it.
+//
+// The positive half is as load-bearing as the negative one: an application role that
+// could not READ workspaces would fail the host resolver on every request, so a test
+// asserting only the refusals could pass against a completely broken grant.
+func TestPostgres_appRoleCannotWriteTheTenantRoot(t *testing.T) {
+	app, platform := dbtest.RequireTenantPair(t)
+	ctx := context.Background()
+
+	if _, err := platform.ExecContext(ctx,
+		`INSERT INTO workspaces (id, slug, public_host, region, status, created_at, updated_at)
+		 VALUES ('ws-root-probe', 'root-probe', 'root-probe.example', 'us', 'active', ?, ?)`,
+		"2026-06-01T00:00:00Z", "2026-06-01T00:00:00Z"); err != nil {
+		t.Fatalf("platform role could not create the probe workspace: %v", err)
+	}
+
+	var slug string
+	if err := app.QueryRowContext(ctx,
+		`SELECT slug FROM workspaces WHERE id = ?`, "ws-root-probe").Scan(&slug); err != nil {
+		t.Fatalf("application role cannot read workspaces, which breaks the host resolver: %v", err)
+	}
+	if slug != "root-probe" {
+		t.Fatalf("read back slug %q; want root-probe", slug)
+	}
+
+	for _, w := range []struct {
+		what, query string
+		args        []any
+	}{
+		{"INSERT", `INSERT INTO workspaces (id, slug, public_host, region, status, created_at, updated_at)
+			VALUES ('ws-app-insert', 'app-insert', 'app-insert.example', 'us', 'active', ?, ?)`,
+			[]any{"2026-06-01T00:00:00Z", "2026-06-01T00:00:00Z"}},
+		{"UPDATE", `UPDATE workspaces SET status = 'suspended' WHERE id = ?`, []any{"ws-root-probe"}},
+		{"DELETE", `DELETE FROM workspaces WHERE id = ?`, []any{"ws-root-probe"}},
+	} {
+		res, err := app.ExecContext(ctx, w.query, w.args...)
+		if err == nil {
+			n, _ := res.RowsAffected()
+			// An UPDATE or DELETE the policy filters away reports success and zero rows
+			// rather than an error, so "no error" is not by itself a failure — writing
+			// something is.
+			if n > 0 {
+				t.Errorf("%s on workspaces by the application role changed %d row(s); want 0", w.what, n)
+			}
+			continue
+		}
+		t.Logf("%s refused as expected: %v", w.what, err)
+	}
+
+	// And the probe survived all three, read back on the platform handle so the check
+	// cannot be satisfied by the application role simply being unable to see it.
+	var status string
+	if err := platform.QueryRowContext(ctx,
+		`SELECT status FROM workspaces WHERE id = ?`, "ws-root-probe").Scan(&status); err != nil {
+		t.Fatalf("the probe workspace is gone; the application role deleted the tenant root: %v", err)
+	}
+	if status != "active" {
+		t.Errorf("probe status = %q; want active — the application role changed the tenant root", status)
+	}
 }
 
 // TestSQLite_enableRLSIsANoOp: the same call on the engine that has no row-level
