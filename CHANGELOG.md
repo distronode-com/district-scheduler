@@ -189,6 +189,15 @@ exact tag (`ghcr.io/calnode/calnode:0.1.0`) if you need stability between upgrad
   hand, including the primary-key case, which is the one a code match written from the
   message alone would get wrong.
 
+- **An event type can no longer be created in a state the editor refuses to save.** Three
+  related fixes: creating one without a location defaulted to Zoom without checking whether
+  the owner had connected Zoom (it now falls back to in-person, which needs nothing);
+  `PATCH` validated the location whenever the request mentioned it, which the editor does on
+  every save, so a stored value the current rules reject locked the operator out of every
+  other field (it now validates only when the location actually changes); and the demo
+  seeder wrote `link` with no URL, so a demo visitor's first edit failed on a field they had
+  never touched.
+
 ## [0.8.0] - 2026-09-03
 
 ### Added
