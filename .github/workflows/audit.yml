@@ -7,7 +7,12 @@ name: Audit
 # This is separate from ci.yml (build/test) — audit signal, not correctness.
 on:
   push:
-    branches: [main]
+    branches: [main, district]
+  # Fork divergence, deliberate: `district` is this fork's default branch, and the
+  # scans below are worth running on a pull request too — Scorecard's SAST check
+  # looks for a scanner running on PRs, and a vulnerability or leaked secret is
+  # cheaper to catch before the merge than on the push after it.
+  pull_request:
   schedule:
     - cron: '20 6 * * 1' # weekly, Monday — catches newly-disclosed CVEs even with no code changes
   workflow_dispatch:

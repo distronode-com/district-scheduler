@@ -1,0 +1,16 @@
+version: 2
+
+# gomod and npm are deliberately absent here: those bumps are made upstream first and
+# arrive on this fork with the sync, so a fork-side bump would edit go.mod/go.sum and
+# frontend/pnpm-lock.yaml — files shared with upstream — and drift them against it.
+# What is left is what the fork actually owns: its own workflow pins and its own image.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

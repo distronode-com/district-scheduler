@@ -20,7 +20,12 @@
 # /version fields as an upstream one.
 
 # ── Frontend build stage ───────────────────────────────────────────────────────
-FROM node:22-alpine AS frontend-builder
+# Digests are the multi-arch manifest-list (OCI image index) digests, not a
+# per-architecture one — docker-publish.yml builds linux/amd64 and linux/arm64 from
+# this file, and pinning a single-arch digest would break the other arch at pull time.
+# Get them with `crane digest <image>`; `docker inspect` on a pulled image gives the
+# single-arch digest instead.
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS frontend-builder
 
 RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
 
@@ -33,7 +38,7 @@ COPY frontend/ .
 RUN pnpm build
 
 # ── Go build stage ─────────────────────────────────────────────────────────────
-FROM golang:1.26.6-alpine AS builder
+FROM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS builder
 
 RUN apk add --no-cache ca-certificates
 
@@ -63,7 +68,7 @@ RUN mkdir -p /build/data-empty
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 # distroless static: CA roots and tzdata included, no shell, no package manager.
 # The binary is CGO-free and fully static, which is the only thing this base can run.
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 COPY --from=builder /build/district-scheduler /district-scheduler
 # Uploads (avatars, branding) go here; owned by the uid below so the binary can
