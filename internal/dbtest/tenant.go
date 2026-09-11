@@ -48,7 +48,7 @@ func RequireTenantPair(t *testing.T) (app, platform *db.DB) {
 		t.Fatalf("dbtest: rand: %v", err)
 	}
 	role := "calnode_app_" + hex.EncodeToString(buf)
-	const password = "tenant_pair_pw" // a local test role, dropped when the test ends
+	const password = "tenant_pair_pw" // #nosec G101 -- test-only role password for the local tenant-pair harness, never a real credential
 
 	if _, err := owner.Exec(`CREATE ROLE ` + role + ` LOGIN PASSWORD '` + password + `' NOBYPASSRLS`); err != nil {
 		t.Skipf("LOUD SKIP: cannot CREATE ROLE on this server (%v). The multi-tenant tests REQUIRE a "+
@@ -88,8 +88,11 @@ func RequireTenantPair(t *testing.T) (app, platform *db.DB) {
 		t.Fatalf("dbtest: OpenPair: %v", err)
 	}
 	t.Cleanup(func() {
+		// #nosec G104 -- test-helper cleanup of the two handles the test is finished with;
+		// the role and schema they used are dropped by the cleanups registered above, and
+		// those DO report their errors.
 		app.Close()
-		platform.Close()
+		platform.Close() // #nosec G104 -- as above
 	})
 
 	// The guard that turns "the application role cannot bypass" from an assumption

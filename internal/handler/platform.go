@@ -550,7 +550,7 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
-			rows.Close()
+			rows.Close() // #nosec G104 -- releasing the cursor on the error path; the scan error is logged and answered immediately below
 			h.logger.ErrorContext(r.Context(), "platform: scan recording key", "error", err)
 			h.writeError(w, http.StatusInternalServerError, "internal error")
 			return
@@ -558,12 +558,12 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		keys = append(keys, key)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		rows.Close() // #nosec G104 -- releasing the cursor on the error path; the iteration error is logged and answered immediately below
 		h.logger.ErrorContext(r.Context(), "platform: iterate recording keys", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	rows.Close()
+	rows.Close() // #nosec G104 -- rows already fully consumed above; nothing actionable on close error
 
 	res, err := h.db.ExecContext(r.Context(), `DELETE FROM workspaces WHERE id = ?`, id)
 	if err != nil {

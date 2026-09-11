@@ -74,5 +74,12 @@ func lockHosts(ctx context.Context, tx *db.Tx, hostIDs ...string) error {
 // is used because this package already imports it for manage tokens.
 func hostLockKey(hostID string) int64 {
 	sum := sha256.Sum256([]byte(hostLockDomain + hostID))
+	// #nosec G115 -- not a narrowing conversion: uint64 -> int64 is the same 64 bits read
+	// two's-complement, and pg_advisory_xact_lock's parameter is a bigint whose domain is
+	// exactly that signed range, negatives included. Every one of the 2^64 hash values maps
+	// to a distinct, valid key, so there is no input for which this loses information or
+	// produces a wrong lock. Masking the top bit to satisfy the rule numerically would
+	// change the derivation, which TestHostLockKey pins precisely because two instances
+	// sharing one Postgres must agree on the key or they serialise against nothing.
 	return int64(binary.BigEndian.Uint64(sum[:8]))
 }

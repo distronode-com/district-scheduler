@@ -51,7 +51,7 @@ func OpenPair(appURL, adminURL string, opts ...Option) (app, platform *DB, err e
 
 	app, err = OpenDB(appURL, opts...)
 	if err != nil {
-		platform.Close() //nolint:errcheck
+		platform.Close() // #nosec G104 -- unwinding the handle opened a few lines above; the application-handle error returned below is the one the caller acts on
 		return nil, nil, fmt.Errorf("open application handle: %w", err)
 	}
 	app.multiTenant = true

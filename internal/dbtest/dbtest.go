@@ -55,7 +55,7 @@ func openSQLite(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatalf("dbtest: open sqlite: %v", err)
 	}
-	t.Cleanup(func() { h.Close() })
+	t.Cleanup(func() { h.Close() }) // #nosec G104 -- test-helper cleanup of an in-memory handle the test is finished with; a close error cannot affect the result it already produced
 	if err := h.Migrate(); err != nil {
 		t.Fatalf("dbtest: migrate sqlite: %v", err)
 	}
@@ -83,7 +83,7 @@ func openPostgres(t *testing.T, dsn string) *db.DB {
 		t.Fatalf("dbtest: open postgres (admin): %v", err)
 	}
 	if _, err := admin.Exec(`CREATE SCHEMA ` + quoteIdent(schema)); err != nil {
-		admin.Close()
+		admin.Close() // #nosec G104 -- unwinding the admin handle before the t.Fatalf below, which reports the create-schema error that actually failed the test
 		t.Fatalf("dbtest: create schema %s: %v", schema, err)
 	}
 	// Registered first, so it runs last: the schema is dropped after the handle
@@ -99,7 +99,7 @@ func openPostgres(t *testing.T, dsn string) *db.DB {
 	if err != nil {
 		t.Fatalf("dbtest: open postgres: %v", err)
 	}
-	t.Cleanup(func() { h.Close() })
+	t.Cleanup(func() { h.Close() }) // #nosec G104 -- test-helper cleanup; the schema this handle points at is dropped by the cleanup registered above, which does report its error
 
 	if err := h.Migrate(); err != nil {
 		t.Fatalf("dbtest: migrate postgres: %v", err)
