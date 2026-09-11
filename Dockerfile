@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1
 
 # ── Frontend build stage ───────────────────────────────────────────────────────
-FROM node:22-alpine AS frontend-builder
+# Digests are the multi-arch manifest-list (OCI image index) digests, not a
+# per-architecture one — docker-publish.yml builds linux/amd64 and linux/arm64 from
+# this file, and pinning a single-arch digest would break the other arch at pull time.
+# Get them with `crane digest <image>`; `docker inspect` on a pulled image gives the
+# single-arch digest instead.
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS frontend-builder
 
 # Pin pnpm to the version in package.json's `packageManager` field (not @latest)
 # so CI builds are reproducible and match the committed lockfile.
@@ -16,7 +21,7 @@ COPY frontend/ .
 RUN pnpm build
 
 # ── Go build stage ─────────────────────────────────────────────────────────────
-FROM golang:1.26.6-alpine AS builder
+FROM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS builder
 
 RUN apk add --no-cache ca-certificates wget
 
@@ -47,17 +52,32 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w -X github.com/calnode/calnode/internal/buildinfo.Version=${VERSION} -X github.com/calnode/calnode/internal/buildinfo.Commit=${COMMIT}" \
     -o calnode ./cmd/calnode
 
-# Download Litestream for the deployment target, matching TARGETARCH
+# Download Litestream for the deployment target, matching TARGETARCH.
+#
+# The release does not publish a checksum file, so the expected sha256 of each
+# tarball is recorded here and verified before anything is extracted — without it
+# this step runs whatever that URL happens to serve at build time. Bumping
+# LITESTREAM_VERSION means recomputing both hashes.
 ARG LITESTREAM_VERSION=0.3.13
-RUN wget -qO- \
-    "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-v${LITESTREAM_VERSION}-linux-${TARGETARCH}.tar.gz" \
-    | tar -xz -C /usr/local/bin litestream
+ARG LITESTREAM_SHA256_AMD64=eb75a3de5cab03875cdae9f5f539e6aedadd66607003d9b1e7a9077948818ba0
+ARG LITESTREAM_SHA256_ARM64=9585f5a508516bd66af2b2376bab4de256a5ef8e2b73ec760559e679628f2d59
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) expected="${LITESTREAM_SHA256_AMD64}" ;; \
+      arm64) expected="${LITESTREAM_SHA256_ARM64}" ;; \
+      *) echo "no recorded Litestream checksum for TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    wget -qO /tmp/litestream.tar.gz \
+      "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-v${LITESTREAM_VERSION}-linux-${TARGETARCH}.tar.gz"; \
+    echo "${expected}  /tmp/litestream.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/litestream.tar.gz -C /usr/local/bin litestream; \
+    rm -f /tmp/litestream.tar.gz
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 # alpine (not scratch) — needed for the shell entrypoint and Litestream.
 # No --platform pin here: inherits the build host's native architecture,
 # matching whatever TARGETARCH the binary above was actually compiled for.
-FROM alpine:3.21
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 RUN apk add --no-cache ca-certificates tzdata
 

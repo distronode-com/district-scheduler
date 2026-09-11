@@ -22,7 +22,7 @@ jobs:
       security-events: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
@@ -32,13 +32,13 @@ jobs:
           results_format: sarif
           publish_results: true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: scorecard-sarif
           path: results.sarif
           retention-days: 30
 
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.38.0
         with:
           sarif_file: results.sarif
 
@@ -46,9 +46,9 @@ jobs:
     name: SBOM (syft)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: anchore/sbom-action@v0
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           path: .
           format: cyclonedx-json
@@ -59,15 +59,15 @@ jobs:
     name: Deterministic claims guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0 # gitleaks needs full history
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 10.32.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -81,12 +81,18 @@ jobs:
         working-directory: frontend
         run: pnpm build
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
           cache: true
 
+      # The two claim greps below assert *this project's* architecture (single binary,
+      # no server DB; instance-per-tenant with no tenant column). A fork that changes
+      # either on purpose would fail them by design, so they are scoped to the
+      # canonical repository. The vulnerability/secret scans underneath are useful
+      # everywhere and stay unguarded.
       - name: No server-DB driver (single-binary-no-server-db claim)
+        if: github.repository == 'Calnode/calnode'
         run: |
           if grep -iE 'postgres|mysql|redis' go.mod; then
             echo "::error::go.mod pulled in a server DB driver — this breaks the single-binary claim in audit/claims.yaml"
@@ -94,6 +100,7 @@ jobs:
           fi
 
       - name: No tenant/workspace column (instance-per-tenant-isolation claim)
+        if: github.repository == 'Calnode/calnode'
         run: |
           if grep -rl 'tenant_id\|workspace_id' internal/db/migrations/*.sql; then
             echo "::error::a tenant/workspace column appeared — re-check the instance-per-tenant claim in audit/claims.yaml"
@@ -102,12 +109,12 @@ jobs:
 
       - name: govulncheck (clean-security-scan claim)
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           govulncheck ./...
 
       - name: gosec (clean-security-scan claim — AUDIT.md says every finding is annotated)
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
           gosec ./...
 
       - name: gitleaks (clean-security-scan claim)
@@ -117,5 +124,5 @@ jobs:
         # same way govulncheck/gosec above do, and the same invocation AUDIT.md
         # documents for a local run.
         run: |
-          go install github.com/zricethezav/gitleaks/v8@latest
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
           gitleaks detect --source . --no-banner -v
