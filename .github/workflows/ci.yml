@@ -71,6 +71,16 @@ jobs:
       - name: go test
         run: go test ./...
 
+      # The targets live on fork PR #5 (feat/fuzz-targets); -fuzz takes exactly one per
+      # invocation, hence three lines. Each run starts from the committed seeds and finds
+      # coverage afresh, which is the point — a regression in a validator surfaces as a
+      # failing input — and a 20-second budget per target keeps the job bounded.
+      - name: go fuzz (seeded, 20s per target)
+        run: |
+          go test -run '^$' -fuzz '^FuzzSSONextPath$' -fuzztime=20s ./internal/handler/
+          go test -run '^$' -fuzz '^FuzzRebind$' -fuzztime=20s ./internal/db/
+          go test -run '^$' -fuzz '^FuzzReturnToFromRequest$' -fuzztime=20s ./internal/handler/
+
   # The same suite against PostgreSQL. Separate job rather than a matrix on `check`
   # because only the Go half is engine-dependent: svelte-check and pnpm build would
   # run twice for no reason. The frontend build is still needed here, since the Go
