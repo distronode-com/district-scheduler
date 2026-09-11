@@ -124,7 +124,13 @@ type platformWorkspaceRequest struct {
 			DurationMinutes  int    `json:"duration_minutes"`
 			MinNoticeMinutes int    `json:"min_notice_minutes"`
 			MaxFutureDays    int    `json:"max_future_days"`
-			Availability     []struct {
+			// Both optional. Omitted, the seed writes in_person with no value — see
+			// seedWorkspaceEventType for why that is the only safe default. Supplied,
+			// they are validated through the same validateLocation the editor answers
+			// to, so provisioning cannot write a row the owner's first save rejects.
+			LocationType  string `json:"location_type"`
+			LocationValue string `json:"location_value"`
+			Availability  []struct {
 				DayOfWeek int    `json:"day_of_week"`
 				StartTime string `json:"start_time"`
 				EndTime   string `json:"end_time"`
@@ -239,6 +245,16 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.seedWorkspaceEventType(r.Context(), tx, &req, etID, ownerID); err != nil {
+		// A rejected default location is the caller's mistake, not ours, so it gets the
+		// validator's own sentence and a 400 — the same answer the editor would give for
+		// the same value. Returning here leaves the deferred Rollback to undo the
+		// workspace, owner and key already inserted above: a tenancy is provisioned whole
+		// or not at all, and a half one would answer requests with no event type.
+		var invalid seedValidationError
+		if errors.As(err, &invalid) {
+			h.writeError(w, http.StatusBadRequest, invalid.msg)
+			return
+		}
 		h.logger.ErrorContext(r.Context(), "platform: seed event type", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -368,14 +384,47 @@ func (h *Handler) seedWorkspaceSettings(ctx context.Context, tx *db.Tx, req *pla
 	return err
 }
 
+// seedValidationError is a seed failure the PROVISIONING CALLER caused, as opposed to
+// one this instance caused. CreateWorkspace answers 400 with its sentence rather than
+// 500 "internal error", because the sentence names the field the caller got wrong and
+// only the caller can fix it.
+type seedValidationError struct{ msg string }
+
+func (e seedValidationError) Error() string { return e.msg }
+
+// seedLocationTypes is the event_types.location_type CHECK list, as widened by migration
+// 00042. Membership is tested here rather than left to the constraint because
+// validateLocation's default branch accepts any unknown type (in_person and friends
+// impose no value requirement), so an unlisted one would sail past the validator and
+// surface as a constraint violation — a 500, or at best "invalid location_type or
+// routing_mode value", instead of a sentence naming what was wrong.
+var seedLocationTypes = map[string]bool{
+	"zoom": true, "google_meet": true, "teams": true, "custom_video": true,
+	"phone": true, "in_person": true, "link": true, "livekit": true,
+}
+
 // seedWorkspaceEventType writes the default event type, its owner host row and its
 // availability rules.
 //
-// location_type 'link' and routing_mode 'fixed' are the schema's own defaults (the CHECK
-// constraints in migration 00001 admit no 'none' or 'single'), which is what a
-// single-host event type created through the admin UI gets. The platform API does not
-// take either: a provisioning caller sets up a tenant, and how one event type meets is
-// something its owner changes in the UI afterwards.
+// ⛔ The default location is 'in_person' with a NULL value, and the reason is the rule
+// CLAUDE.md states as "anything written without validation must be valid by
+// construction". This INSERT goes straight to the table, so validateLocation never sees
+// it — and in_person is the one type that validator accepts with no value and no
+// connected provider, so it is valid on any instance whatever the owner has set up.
+//
+// It used to write 'link' with a NULL location_value, which is the schema's column
+// default and looks like what the admin UI produces. It is not: the UI's create path
+// runs the location through validateLocation, which rejects link-with-no-URL. Because
+// the editor submits the whole form on every save, the tenant's FIRST save of their
+// seeded event type failed with "enter a valid meeting URL (https://…)" — on a field
+// they had never touched, and with no way out of it from the UI.
+//
+// A caller that knows better says so: location_type (and location_value) on the defaults
+// are validated through validateLocation BEFORE the insert, so the only rows this writes
+// are ones the editor will accept back. routing_mode stays 'fixed', the schema's default
+// and what a single-host event type created through the admin UI gets; the platform API
+// does not take it, because how one event type meets is something its owner changes in
+// the UI afterwards.
 //
 // The rules carry no timezone of their own: availability is stored as local HH:MM and
 // interpreted in the OWNER's iana_timezone, which is why owner_timezone is required
@@ -385,13 +434,34 @@ func (h *Handler) seedWorkspaceEventType(ctx context.Context, tx *db.Tx, req *pl
 	if et.Slug == "" {
 		return nil
 	}
+
+	locType := strings.TrimSpace(et.LocationType)
+	locValue := strings.TrimSpace(et.LocationValue)
+	if locType == "" {
+		locType, locValue = "in_person", ""
+	} else {
+		if !seedLocationTypes[locType] {
+			return seedValidationError{fmt.Sprintf("location_type %q is not a supported location", et.LocationType)}
+		}
+		if err := h.validateLocation(ctx, ownerID, locType, &locValue); err != nil {
+			return seedValidationError{err.Error()}
+		}
+	}
+	// NULL, not "": every read of this column treats the absence of a value as NULL
+	// (COALESCE(location_value, '') is how the rest of the code asks), and an empty
+	// string is a second spelling of the same thing that only some of them handle.
+	var locValueArg any
+	if locValue != "" {
+		locValueArg = locValue
+	}
+
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO event_types
 		  (id, workspace_id, user_id, slug, name, duration_minutes,
-		   min_notice_minutes, max_future_days, location_type, routing_mode)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'link', 'fixed')`,
+		   min_notice_minutes, max_future_days, location_type, location_value, routing_mode)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fixed')`,
 		etID, req.ID, ownerID, et.Slug, et.Name, et.DurationMinutes,
-		et.MinNoticeMinutes, et.MaxFutureDays); err != nil {
+		et.MinNoticeMinutes, et.MaxFutureDays, locType, locValueArg); err != nil {
 		return fmt.Errorf("insert event type: %w", err)
 	}
 
