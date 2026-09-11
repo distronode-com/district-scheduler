@@ -22,6 +22,8 @@ permissions: read-all
 jobs:
   scorecard:
     name: OpenSSF Scorecard
+    # scorecard-action documents `pull_request` as experimental, and this job publishes results and needs id-token: write, neither of which means anything on a PR.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -49,6 +51,8 @@ jobs:
 
   sbom:
     name: SBOM (syft)
+    # An SBOM published per pull request is noise; the one that matters is the one for what is on the branch.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
