@@ -267,9 +267,10 @@ func TestConnectCalendar_returnTo_refusedWhenTheFeatureIsOff(t *testing.T) {
 	}
 }
 
-// The state separator is refused BEFORE the value is encoded. url.Parse rejects ASCII
-// control characters on its own, so this pins the explicit guard rather than the accident
-// that currently backs it up.
+// The state separator is refused BEFORE the value is encoded. url.Parse rejects an ASCII
+// control character in this position on its own (it is before any fragment — see the test
+// below for where that stops being true), so this pins the explicit guard rather than the
+// accident that backs it up.
 func TestConnectCalendar_returnTo_refusesTheStateSeparator(t *testing.T) {
 	h, _ := newReturnToHandler(t, testConsoleOrigin)
 
@@ -294,6 +295,35 @@ func TestReturnToFromRequest_refusesTheSeparatorItself(t *testing.T) {
 
 	if _, err := h.returnToFromRequest(r); err == nil {
 		t.Error("returnToFromRequest accepted a return_to carrying the state separator")
+	}
+}
+
+// ⛔ A CONTROL CHARACTER AFTER THE '#' IS THE ONE url.Parse DOES NOT CATCH, AND BOTH OF
+// THESE WERE ACCEPTED UNTIL THE EXPLICIT SCAN LANDED.
+//
+// url.Parse splits the fragment off before its own control-character check, so everything
+// after the '#' goes unscanned — measured on go1.26.6, and found by FuzzReturnToFromRequest
+// rather than reasoned about. The origin on both values is the allowed one, which is the
+// point: nothing else in this function has any reason to refuse them, so a 400 here is the
+// scan and only the scan.
+func TestConnectCalendar_returnTo_refusesAControlCharacterInTheFragment(t *testing.T) {
+	cases := map[string]string{
+		"a NUL in the fragment":  testConsoleOrigin + "/x#\x00",
+		"a CRLF in the fragment": testConsoleOrigin + "/x#\r\n",
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			h, _ := newReturnToHandler(t, testConsoleOrigin)
+			rec := httptest.NewRecorder()
+			h.ConnectCalendar(rec, connectReq("user-1", "?return_to="+url.QueryEscape(value)))
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d for %q; want 400", rec.Code, value)
+			}
+			if got := errorBody(t, rec); got != "return_to origin not allowed" {
+				t.Errorf("error = %q; want %q", got, "return_to origin not allowed")
+			}
+		})
 	}
 }
 
