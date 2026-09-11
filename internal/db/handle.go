@@ -147,7 +147,7 @@ func (h *DB) bindConn(ctx context.Context) (*sql.Conn, error) {
 	}
 	if _, err := conn.ExecContext(ctx,
 		`SELECT set_config('app.workspace_id', $1, false)`, h.workspace); err != nil {
-		conn.Close() //nolint:errcheck // the bind error is the useful one
+		conn.Close() // #nosec G104 -- releasing the connection on the error path; the bind error returned below is the useful one
 		return nil, fmt.Errorf("bind workspace %q: %w", h.workspace, err)
 	}
 	return conn, nil
@@ -179,7 +179,7 @@ func (h *DB) QueryContext(ctx context.Context, query string, args ...any) (*Rows
 	}
 	rows, err := conn.QueryContext(ctx, h.dialect.Rebind(query), args...)
 	if err != nil {
-		conn.Close() //nolint:errcheck // the query error is the useful one
+		conn.Close() // #nosec G104 -- releasing the connection on the error path; the query error returned below is the useful one
 		return nil, err
 	}
 	return &Rows{Rows: rows, conn: conn}, nil
@@ -276,13 +276,13 @@ func (h *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
 	}
 	tx, err := conn.BeginTx(ctx, opts)
 	if err != nil {
-		conn.Close() //nolint:errcheck
+		conn.Close() // #nosec G104 -- releasing the connection on the error path; the BeginTx error returned below is the useful one
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`SELECT set_config('app.workspace_id', $1, true)`, h.workspace); err != nil {
-		tx.Rollback() //nolint:errcheck
-		conn.Close()  //nolint:errcheck
+		tx.Rollback() // #nosec G104 -- unwinding a transaction that never got its binding; the bind error returned below is the useful one
+		conn.Close()  // #nosec G104 -- releasing the connection on the same error path
 		return nil, fmt.Errorf("bind workspace %q on transaction: %w", h.workspace, err)
 	}
 	return &Tx{Tx: tx, dialect: h.dialect, conn: conn, workspace: h.workspace}, nil
@@ -345,7 +345,11 @@ func (r *Row) Err() error {
 
 func (r *Row) release() {
 	if r.conn != nil {
-		r.conn.Close() //nolint:errcheck // nothing useful to do with it here
+		// #nosec G104 -- best-effort release back to the pool. Unlike Rows.Close, whose whole
+		// job is releasing, release() is reached from Scan and Err, and surfacing a release
+		// error there would report a row that was read correctly as a failed read.
+		// database/sql discards the connection either way, so there is nothing to retry.
+		r.conn.Close()
 		r.conn = nil
 	}
 }
@@ -388,7 +392,11 @@ func (t *Tx) Rollback() error {
 
 func (t *Tx) release() {
 	if t.conn != nil {
-		t.conn.Close() //nolint:errcheck
+		// #nosec G104 -- best-effort release back to the pool. release() is reached from
+		// Commit and Rollback, which return the transaction's own error; surfacing a release
+		// error from Commit would report a transaction that DID commit as having failed.
+		// database/sql discards the connection either way, so there is nothing to retry.
+		t.conn.Close()
 		t.conn = nil
 	}
 }

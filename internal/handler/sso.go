@@ -248,7 +248,7 @@ func (h *Handler) SSOHandoff(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.InfoContext(r.Context(), "sso: session handed off",
 		"iss", claims.Iss, "user_id", userID, "user_created", created, "workspace_id", ws.ID)
-	http.Redirect(w, r, next, http.StatusFound)
+	http.Redirect(w, r, next, http.StatusFound) // #nosec G710 -- next comes out of ssoNextPath, which refuses anything that is not a same-origin absolute path (no "//", no backslash, no "://", no control characters) rather than sanitising it; gosec's taint analysis cannot trace through that check
 }
 
 // ssoWorkspace decides which workspace a hand-off lands in.
