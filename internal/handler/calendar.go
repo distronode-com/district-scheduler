@@ -43,11 +43,28 @@ func (h *Handler) returnToFromRequest(r *http.Request) (string, error) {
 		return "", errReturnToNotAllowed
 	}
 	// Refused before it is encoded rather than after it is decoded: a separator inside the
-	// value would let a return_to carry a fourth field into a two-separator parse. (Go's
-	// url.Parse already rejects ASCII control characters, so this is the belt behind the
-	// braces — and it is the belt that is checked by a test.)
+	// value would let a return_to carry a fourth field into a two-separator parse.
 	if strings.Contains(raw, stateSep) {
 		return "", errReturnToNotAllowed
+	}
+	// ⛔ url.Parse POLICES CONTROL CHARACTERS ONLY UP TO THE FIRST '#', so this scan is
+	// load-bearing for the fragment rather than a belt behind url.Parse's braces — which is
+	// what the comment here claimed until a fuzz target measured it (go1.26.6):
+	//
+	//	"https://host#\x00"     OK   frag="\x00"
+	//	"https://host#\r\n"     OK   frag="\r\n"
+	//	"https://host#\x1f"     OK   frag="\x1f"
+	//	"https://host/\x00"     ERR  net/url: invalid control character in URL
+	//	"https://host?q=\x00"   ERR  net/url: invalid control character in URL
+	//
+	// url.Parse splits the fragment off BEFORE its stringContainsCTLByte check, so anything
+	// after the '#' is never scanned. The separator guard above covers \x1f on its own, so
+	// the state parse was never at risk; everything else — NUL, CR, LF — reached the value
+	// that goes into the state and comes back out as a redirect target.
+	for _, c := range raw {
+		if c < 0x20 || c == 0x7f {
+			return "", errReturnToNotAllowed
+		}
 	}
 	u, err := url.Parse(raw)
 	if err != nil || !u.IsAbs() || u.Host == "" || u.User != nil {

@@ -133,32 +133,18 @@ func FuzzReturnToFromRequest(f *testing.F) {
 			t.Fatalf("returnToFromRequest(%q) accepted origin %q, which is not on the allowlist", raw, origin)
 		}
 
-		// The separator would smuggle a fourth field into a two-separator state parse, so
-		// this one is unconditional: the explicit guard in returnToFromRequest scans the
-		// whole raw string, fragment included.
+		// Two invariants url.Parse does not carry, and this target is why they are stated
+		// separately. The separator would smuggle a fourth field into a two-separator state
+		// parse. The control-character scan covers the WHOLE value including the fragment,
+		// which url.Parse never examines — the first 30-second run of this target found
+		// "https://console.example.test#\x00" accepted in 22s, and the input is kept at
+		// testdata/fuzz/FuzzReturnToFromRequest/7ade663e1437fd4c.
 		if strings.Contains(got, stateSep) {
 			t.Fatalf("returnToFromRequest(%q) accepted a value carrying the state separator", raw)
 		}
-
-		// ⛔ CONTROL CHARACTERS SURVIVE IN A FRAGMENT, AND returnToFromRequest's OWN COMMENT
-		// SAYS THEY CANNOT. It calls the stateSep check "the belt behind the braces" on the
-		// grounds that "Go's url.Parse already rejects ASCII control characters" — true of
-		// everything up to the '#', and false after it, because url.Parse splits the
-		// fragment off BEFORE the control-character scan. The first 30-second run of this
-		// target found it in 22s, and testdata/fuzz/FuzzReturnToFromRequest/7ade663e1437fd4c
-		// keeps the input: "https://console.example.test#\x00", accepted whole.
-		//
-		// Nothing is loosened here as a result: the separator assertion above is the one
-		// with security weight, and it is the explicit guard — not url.Parse — that carries
-		// it. This assertion is narrowed to the range url.Parse really does police, so it
-		// still fails if THAT ever changes. Measured with go1.26.6, not assumed.
-		head := got
-		if i := strings.IndexByte(head, '#'); i >= 0 {
-			head = head[:i]
-		}
-		for i := 0; i < len(head); i++ {
-			if c := head[i]; c < 0x20 || c == 0x7f {
-				t.Fatalf("returnToFromRequest(%q) accepted control byte %#x at %d, before the fragment", raw, c, i)
+		for i, c := range got {
+			if c < 0x20 || c == 0x7f {
+				t.Fatalf("returnToFromRequest(%q) accepted control character %#U at %d", raw, c, i)
 			}
 		}
 
