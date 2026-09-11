@@ -1,0 +1,36 @@
+# gitleaks configuration.
+#
+# The one allowance below covers a fixture added by the fork, not by upstream Calnode,
+# which ships no gitleaks config of its own.
+#
+# The Audit workflow checks out with fetch-depth: 0 and runs `gitleaks detect --source .`,
+# which scans the whole history. An inline `gitleaks:allow` comment would therefore not be
+# enough: the commits that introduced these fixtures (af0ffd79, be4ce919) keep the bare
+# line forever, so the allowance has to live in configuration rather than in the blob.
+#
+# Gitleaks discovers this file automatically as (target path)/.gitleaks.toml, which is the
+# fourth and lowest-precedence entry in its config lookup. The CI invocation passes no
+# --config flag, so auto-discovery is the mechanism that matters here.
+
+title = "Calnode (Distronode fork) gitleaks config"
+
+[extend]
+useDefault = true
+
+# The array form. The singular [allowlist] table is a backwards-compatibility shim that
+# gitleaks marks deprecated and plans to remove in 9.x, and audit.yml installs the scanner
+# at @latest, so the deprecated spelling would be a scheduled breakage.
+[[allowlists]]
+description = "Test fixtures that are not secrets. Each entry says why."
+
+# A 32-byte AES key spelled as the ascending-nibble pattern 00 11 22 ... ff, twice. Used by
+# internal/handler/platform_test.go and internal/server/rss_proof_test.go so that a handler
+# under test has *a* key: the platform API encrypts the SMTP password, the LLM key and the
+# LiveKit secret it is handed, and without a key those tests would fail provisioning for a
+# reason unrelated to what they assert. Gitleaks scores it at entropy 4.0, which is what
+# trips generic-api-key, but it is a counting pattern rather than a credential and it has
+# never been a live key for anything.
+#
+# Matched by value rather than by path: exempting the whole test files would also exempt a
+# real secret pasted into them later.
+regexes = ['''00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff''']
