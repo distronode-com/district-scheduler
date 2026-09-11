@@ -198,6 +198,20 @@ exact tag (`ghcr.io/calnode/calnode:0.1.0`) if you need stability between upgrad
   seeder wrote `link` with no URL, so a demo visitor's first edit failed on a field they had
   never touched.
 
+- **A provisioned tenant's default event type can be saved from the admin editor.**
+  `POST /v1/platform/workspaces` seeded it as `link` with no meeting URL — the schema's own
+  column default, and a state the editor refuses to save. Because the editor submits the
+  whole form on every save, the tenant's first edit of any field came back "enter a valid
+  meeting URL (https://…)" about a location they had never chosen, and no other field could
+  be saved either. The seed now writes in-person with no value, which is the one location
+  that needs nothing configured, and migration `00065` repairs the event types already in
+  that state (a `link` that carries a URL is left alone).
+
+  A provisioning caller that knows how the tenant meets can now say so:
+  `defaults.event_type` takes `location_type` and `location_value`, both optional and both
+  checked before anything is written, so a value the editor would reject is answered 400
+  with the reason rather than provisioned and discovered later.
+
 ## [0.8.0] - 2026-09-03
 
 ### Added
