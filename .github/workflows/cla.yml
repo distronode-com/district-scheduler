@@ -21,18 +21,29 @@ on:
     types: [opened, closed, synchronize]
 
 permissions:
-  actions: write
-  contents: write
-  pull-requests: write
-  statuses: write
+  contents: read
 
 jobs:
   cla:
+    # This job runs on `pull_request_target` with write permissions, needs
+    # secrets.PERSONAL_ACCESS_TOKEN, and stores signatures against the CLA document at
+    # Calnode/calnode. On a fork none of that exists, so the job can only ever fail —
+    # while still running a third-party action with write permissions on every PR
+    # opened there. Restrict it to the repository the CLA actually belongs to.
+    if: github.repository == 'Calnode/calnode'
     runs-on: ubuntu-latest
+    # Scoped to this job rather than the whole workflow: these are the four scopes
+    # contributor-assistant documents (it commits signatures, comments on the PR and
+    # sets a status), kept unchanged, but no longer handed to anything added later.
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+      statuses: write
     steps:
       - name: CLA Assistant
         if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
-        uses: contributor-assistant/github-action@v2.6.1
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
