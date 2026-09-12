@@ -512,9 +512,61 @@ func TestHTMLRendersInEveryLocale(t *testing.T) {
 	}
 }
 
+// TestTextTemplates_signOffWithBrand is the regression guard for a split that lived
+// inside a single message. All seven HTML variants take their wordmark from the shared
+// header/footer, which reads {{.Brand}}; the three HOST text templates hardcoded the
+// product name instead, so an operator who set a business name got attendee mail signed
+// with it and host mail signed with ours, and the text and HTML alternatives of one host
+// email disagreed with each other. Nothing rendered the text templates in a test, which
+// is why it survived.
+func TestTextTemplates_signOffWithBrand(t *testing.T) {
+	d := sampleBookingData() // BrandName: "Orchestratr"
+	texts := map[string]string{
+		"confirm-org":     render(confirmOrgTmpl, d),
+		"confirm-host":    render(confirmHostTmpl, d),
+		"cancel-org":      render(cancelOrgTmpl, d),
+		"cancel-host":     render(cancelHostTmpl, d),
+		"reschedule-org":  render(rescheduleOrgTmpl, d),
+		"reschedule-host": render(rescheduleHostTmpl, d),
+		"reminder-org":    render(reminderOrgTmpl, d),
+	}
+	if len(texts) != 7 {
+		t.Fatalf("expected the seven text templates, got %d", len(texts))
+	}
+	for name, out := range texts {
+		if strings.TrimSpace(out) == "" {
+			t.Errorf("%s: rendered empty text (template error)", name)
+			continue
+		}
+		if !strings.Contains(out, "\u2014 Orchestratr") {
+			t.Errorf("%s: does not sign off with the configured brand; tail was %q",
+				name, lastLines(out, 2))
+		}
+		if strings.Contains(out, "Calnode") {
+			t.Errorf("%s: still names the upstream product in body copy", name)
+		}
+	}
+}
+
+// lastLines returns the final n non-empty lines of s, for failure messages.
+func lastLines(s string, n int) string {
+	var keep []string
+	for _, l := range strings.Split(strings.TrimSpace(s), "\n") {
+		if strings.TrimSpace(l) != "" {
+			keep = append(keep, l)
+		}
+	}
+	if len(keep) > n {
+		keep = keep[len(keep)-n:]
+	}
+	return strings.Join(keep, " / ")
+}
+
 func TestBookingData_Brand(t *testing.T) {
-	if got := (BookingData{}).Brand(); got != "Calnode" {
-		t.Errorf("Brand() empty = %q; want Calnode", got)
+	// The fallback is the same literal html.go's header writes with no tenant logo
+	// set, so one message's text and HTML parts agree on the sender.
+	if got := (BookingData{}).Brand(); got != "District AI Scheduling" {
+		t.Errorf("Brand() empty = %q; want District AI Scheduling", got)
 	}
 	if got := (BookingData{BrandName: "Acme"}).Brand(); got != "Acme" {
 		t.Errorf("Brand() set = %q; want Acme", got)

@@ -242,7 +242,7 @@ func TestSubjectOverride_defaultWhenEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func smtpForTest() *SMTP {
-	return &SMTP{from: "noreply@example.com", fromName: "Calnode"}
+	return &SMTP{from: "noreply@example.com", fromName: "District AI Scheduling"}
 }
 
 // mustBuildRaw builds msg and fails the test if the recipients are refused — for the
@@ -327,7 +327,7 @@ func TestBuildRaw_fromNameFormatted(t *testing.T) {
 	msg := Message{To: []string{"x@example.com"}, Subject: "Hi", Text: "body"}
 	raw := string(mustBuildRaw(t, s, msg))
 
-	if !strings.Contains(raw, "Calnode") {
+	if !strings.Contains(raw, "District AI Scheduling") {
 		t.Error("From: header missing sender name")
 	}
 	if !strings.Contains(raw, "noreply@example.com") {

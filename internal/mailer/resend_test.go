@@ -32,7 +32,7 @@ func stubResend(t *testing.T, status int, respBody string) (*Resend, *resendPayl
 	resendEndpoint = srv.URL
 	t.Cleanup(func() { resendEndpoint = orig })
 
-	return NewResend("re_test_key", "bookings@example.com", "Calnode"), &got, &hdr
+	return NewResend("re_test_key", "bookings@example.com", "District AI Scheduling"), &got, &hdr
 }
 
 func TestResend_sendsExpectedPayload(t *testing.T) {
@@ -51,7 +51,7 @@ func TestResend_sendsExpectedPayload(t *testing.T) {
 	if hdr.Get("Authorization") != "Bearer re_test_key" {
 		t.Errorf("Authorization = %q, want a bearer token", hdr.Get("Authorization"))
 	}
-	if got.From != `"Calnode" <bookings@example.com>` {
+	if got.From != `"District AI Scheduling" <bookings@example.com>` {
 		t.Errorf("From = %q, want the display name and address", got.From)
 	}
 	if len(got.To) != 1 || got.To[0] != "guest@example.com" {
@@ -167,7 +167,7 @@ func TestResend_transportFailureIsUnreachable(t *testing.T) {
 	resendEndpoint = "http://127.0.0.1:1" // nothing listens here
 	t.Cleanup(func() { resendEndpoint = orig })
 
-	m := NewResend("re_key", "a@example.com", "Calnode")
+	m := NewResend("re_key", "a@example.com", "District AI Scheduling")
 	err := m.Send(context.Background(), Message{To: []string{"b@example.com"}, Subject: "s", Text: "t"})
 	if err == nil {
 		t.Fatal("expected an error")
@@ -178,7 +178,7 @@ func TestResend_transportFailureIsUnreachable(t *testing.T) {
 }
 
 func TestResend_requiresAPIKey(t *testing.T) {
-	m := NewResend("", "a@example.com", "Calnode")
+	m := NewResend("", "a@example.com", "District AI Scheduling")
 	if err := m.Send(context.Background(), Message{To: []string{"b@example.com"}}); err == nil {
 		t.Error("expected an error when no API key is configured")
 	}

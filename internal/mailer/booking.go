@@ -39,7 +39,7 @@ type BookingData struct {
 	AttachICS   bool
 	ICSSequence int
 	// Branding — instance-wide, threaded in by the handler. BrandName is the
-	// wordmark/footer name (falls back to "Calnode" when empty); LogoURL is an
+	// wordmark/footer name (falls back to "District AI Scheduling" when empty); LogoURL is an
 	// optional absolute https image shown in the HTML email header.
 	BrandName     string
 	LogoURL       string
@@ -81,12 +81,15 @@ func (d BookingData) Tf(key string, args ...any) string {
 	return d.locale().Tf(key, args...)
 }
 
-// Brand is the display name for the email wordmark/footer.
+// Brand is the display name for the email wordmark/footer. The fallback is
+// byte-identical to the literal html.go's header writes when no tenant logo is
+// set, so the text and HTML alternatives of one message never disagree about who
+// sent it.
 func (d BookingData) Brand() string {
 	if d.BrandName != "" {
 		return d.BrandName
 	}
-	return "Calnode"
+	return "District AI Scheduling"
 }
 
 // LogoPx is the email logo height in px, defaulting to 28 when unset.
@@ -459,7 +462,7 @@ Location: {{.LocationValue}}{{end}}
 
 Booking reference: {{.BookingID}}
 
-— Calnode
+— {{.Brand}}
 `))
 
 var cancelOrgTmpl = template.Must(template.New("cancel-org").Parse(
@@ -495,7 +498,7 @@ Reason:   {{.CancellationReason}}{{end}}
 
 Booking reference: {{.BookingID}}
 
-— Calnode
+— {{.Brand}}
 `))
 
 var rescheduleOrgTmpl = template.Must(template.New("reschedule-org").Parse(
@@ -539,7 +542,7 @@ Location: {{.LocationValue}}{{end}}
 
 Booking reference: {{.BookingID}}
 
-— Calnode
+— {{.Brand}}
 `))
 
 var reminderOrgTmpl = template.Must(template.New("reminder-org").Parse(
