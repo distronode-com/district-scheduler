@@ -693,7 +693,17 @@
       var toggle = this.card.querySelector('.desc-toggle');
       if (toggle) toggle.addEventListener('click', function () { self.descExpanded = !self.descExpanded; self.syncDesc(); });
       this.wrap.appendChild(this.card);
-      this.wrap.appendChild(el('div', { class: 'powered', html: t(this.i18n, 'powered_by') + ' <a href="https://calnode.com" target="_blank" rel="noopener">Calnode</a>' }));
+      // ⛔ FORK-ONLY, and it must NOT go upstream. Upstream links calnode.com here; this
+      // fork ships as District AI Scheduling and a customer-facing booking page that
+      // credits a product nobody bought is a support question waiting to happen.
+      // Apache-2.0 is satisfied by the notices in source and by NOTICE, not by a UI
+      // backlink, so removing it is a branding decision rather than a licensing one,
+      // upstream attribution stays where the licence actually asks for it. If this
+      // template is ever part of an upstream PR, this line reverts first.
+      // This one renders inside the widget on a customer's OWN site, which is the
+      // furthest-reach copy of the three booking surfaces; _shared.html carries the
+      // same decision for the hosted pages and the two must not disagree.
+      this.wrap.appendChild(el('div', { class: 'powered', html: t(this.i18n, 'powered_by') + ' <a href="https://distronode.com" target="_blank" rel="noopener">District AI</a>' }));
       this.applyStep();
       this.cw = this.wrap.getBoundingClientRect().width || this.cw;
       requestAnimationFrame(function () { self.syncDesc(); });
