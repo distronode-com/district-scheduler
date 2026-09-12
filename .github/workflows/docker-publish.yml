@@ -2,9 +2,8 @@ name: Docker publish
 
 # District Scheduler: builds the multi-arch (amd64 + arm64) MULTI-TENANT image from
 # Dockerfile.district (PostgreSQL-only, distroless, no Litestream) and publishes it
-# as ghcr.io/distronode-com/district-scheduler. The upstream Dockerfile is untouched
-# and is not built here; the fleet pins this image BY DIGEST
-# (distronode-website/infra/scheduler/image-digest.env in the monorepo).
+# as ghcr.io/distronode-corporation/district-scheduler. The upstream Dockerfile is
+# untouched and is not built here. Deployments pin this image BY DIGEST, never by tag.
 #
 # Upstream's tag scheme is kept as is, with `district` in place of `main`:
 #   * PR                → build only (catches cross-arch build breaks early, e.g. an
@@ -33,7 +32,7 @@ env:
   REGISTRY: ghcr.io
   # Hardcoded lowercase — GHCR tags are lowercase and ${{ github.repository }}
   # carries the repo's own casing.
-  IMAGE_NAME: distronode-com/district-scheduler
+  IMAGE_NAME: distronode-corporation/district-scheduler
 
 jobs:
   build:
