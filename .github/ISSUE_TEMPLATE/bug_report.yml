@@ -1,13 +1,15 @@
 name: 🐞 Bug report
-description: Report a reproducible bug in Calnode (not a setup question or feature request).
+description: Report a reproducible bug in District Scheduler (not a setup question or feature request).
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        **Before you start, please [search existing issues](https://github.com/Calnode/calnode/issues?q=is%3Aissue) —** it may already be reported or fixed.
+        **Before you start, please [search existing issues](https://github.com/distronode-corporation/district-scheduler/issues?q=is%3Aissue) —** it may already be reported or fixed.
 
-        This tracker is for **reproducible bugs in Calnode**. For setup help, deployment questions, or "how do I…", please use [Discussions](https://github.com/Calnode/calnode/discussions) instead — those won't be actioned here.
+        This tracker is for **reproducible bugs in District Scheduler**. For setup help, deployment questions, or "how do I…", please use [Discussions](https://github.com/distronode-corporation/district-scheduler/discussions) instead — those won't be actioned here.
+
+        District Scheduler is a fork of [Calnode](https://github.com/Calnode/calnode) and most of the code is shared. If the bug is in upstream code rather than in this fork's changes, [reporting it upstream](https://github.com/Calnode/calnode/issues) gets every deployment the fix. Fork-only code (multi-tenant mode, the platform API, row-level security, the PostgreSQL image) belongs here.
   - type: checkboxes
     id: prechecks
     attributes:
@@ -15,7 +17,7 @@ body:
       options:
         - label: I've searched existing issues and this isn't a duplicate.
           required: true
-        - label: This is a reproducible bug in Calnode — not a configuration/setup question or a feature request.
+        - label: This is a reproducible bug in District Scheduler — not a configuration/setup question or a feature request.
           required: true
   - type: textarea
     id: what-happened
@@ -38,14 +40,25 @@ body:
   - type: input
     id: version
     attributes:
-      label: Calnode version / commit
+      label: District Scheduler version / commit
       description: Shown at /version, or the commit you deployed.
+    validations:
+      required: true
+  - type: dropdown
+    id: build
+    attributes:
+      label: Which build?
+      description: The two images are different products. The fork's is PostgreSQL-only and multi-tenant-capable; upstream's is the SQLite single-binary.
+      options:
+        - PostgreSQL image (ghcr.io/distronode-corporation/district-scheduler)
+        - Upstream SQLite image (ghcr.io/calnode/calnode)
+        - Built from source
     validations:
       required: true
   - type: dropdown
     id: deployment
     attributes:
-      label: How are you running Calnode?
+      label: How are you running District Scheduler?
       options:
         - Self-hosted — Docker
         - Self-hosted — binary

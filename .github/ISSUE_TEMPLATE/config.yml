@@ -1,10 +1,17 @@
 # No blank issues — everything goes through the structured Bug report form (or the links below).
 # Keeps the tracker to real, reproducible bugs instead of setup questions and "how do I…" support.
+#
+# ⛔ These URLs point at THIS fork. They pointed at Calnode/calnode, which sent every
+# reporter of a District Scheduler bug to a tracker that cannot act on fork-only code.
+# The third link is the deliberate exception: a bug in shared code belongs upstream.
 blank_issues_enabled: false
 contact_links:
   - name: 📖 Documentation & setup guide
-    url: https://github.com/Calnode/calnode#readme
+    url: https://github.com/distronode-corporation/district-scheduler#readme
     about: Installation, configuration and how-to. Most questions are answered here — please check first.
   - name: 💬 Questions, setup help & ideas
-    url: https://github.com/Calnode/calnode/discussions
+    url: https://github.com/distronode-corporation/district-scheduler/discussions
     about: For "how do I…", deployment help, or feature ideas, use Discussions. The issue tracker is for confirmed bugs only.
+  - name: ⬆️ Bug in upstream Calnode rather than in this fork?
+    url: https://github.com/Calnode/calnode/issues
+    about: District Scheduler is a fork of Calnode and most of the code is shared. If the bug is in upstream code, report it there so every deployment gets the fix, not just ours.
