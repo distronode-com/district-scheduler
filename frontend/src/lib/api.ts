@@ -161,7 +161,7 @@ export type CalendarStatus = {
 	provider?: string;    // destination provider name, when connected
 	providers?: string[]; // configured providers available to connect
 	connections?: CalendarConnection[]; // all connected calendars (many checked, one destination)
-	unconfigured_providers?: string[]; // providers Calnode supports but this instance has no credentials for
+	unconfigured_providers?: string[]; // providers District Scheduler supports but this instance has no credentials for
 };
 
 export type EmailSettings = {

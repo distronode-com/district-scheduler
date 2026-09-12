@@ -239,7 +239,7 @@
 <ConfirmDialog
 	bind:open={disconnectOpen}
 	title="Disconnect this calendar?"
-	description="Calnode will stop checking it for conflicts. If it was your booking calendar, another connected calendar is promoted automatically."
+	description="This calendar will no longer be checked for conflicts. If it was your booking calendar, another connected calendar is promoted automatically."
 	confirmText="Disconnect"
 	destructive
 	onConfirm={doDisconnect}

@@ -196,8 +196,8 @@
 						1. In LiveKit Cloud, open <span class="font-medium">Project → Settings → Webhooks</span>
 						(<a href="https://docs.livekit.io/home/server/webhooks/" target="_blank" rel="noopener noreferrer" class="text-primary underline">docs</a>).
 					</li>
-					<li>2. Add a webhook with the URL above, and attach the <span class="font-medium">same API key</span> you entered here — it signs the events so Calnode can verify them.</li>
-					<li>3. Save. LiveKit sends all project events to this one URL; Calnode verifies each signature and uses the recording-related ones.</li>
+					<li>2. Add a webhook with the URL above, and attach the <span class="font-medium">same API key</span> you entered here — it signs the events so District Scheduler can verify them.</li>
+					<li>3. Save. LiveKit sends all project events to this one URL; each signature is verified here and only the recording-related events are used.</li>
 				</ol>
 			</div>
 

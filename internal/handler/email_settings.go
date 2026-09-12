@@ -402,8 +402,8 @@ func (h *Handler) TestEmailConnection(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.getMailer().Send(ctx, mailer.Message{
 		To:      []string{user.Email},
-		Subject: "[TEST] Calnode email configuration",
-		Text:    "This is a test email from Calnode. If you received this, your email settings are working correctly.",
+		Subject: "[TEST] District Scheduler email configuration",
+		Text:    "This is a test email from District Scheduler. If you received this, your email settings are working correctly.",
 	}); err != nil {
 		h.logger.ErrorContext(r.Context(), "email connection test: send",
 			"transport", string(transport), "error", err)

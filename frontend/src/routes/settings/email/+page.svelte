@@ -103,7 +103,7 @@
 			<div class="mb-4 flex items-start justify-between gap-2">
 				<div>
 					<h2 class="text-sm font-semibold">Email</h2>
-					<p class="mt-0.5 text-xs text-muted-foreground">How Calnode sends booking emails.</p>
+					<p class="mt-0.5 text-xs text-muted-foreground">How District Scheduler sends booking emails.</p>
 				</div>
 				{#if emailSettings !== null}
 					<span class="flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {emailSettings.enabled ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}">

@@ -63,7 +63,7 @@
 
 		{#if originMismatch}
 			<div class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-				<p class="font-medium">This page is being viewed at a different domain than Calnode is configured for</p>
+				<p class="font-medium">This page is being viewed at a different domain than District Scheduler is configured for</p>
 				<p class="mt-1 text-amber-800">
 					You're browsing <code class="rounded bg-amber-100 px-1 font-mono">{browserOrigin}</code>, but this
 					server's <code class="rounded bg-amber-100 px-1 font-mono">BASE_URL</code> is set to
@@ -123,7 +123,7 @@
 						Click <span class="font-medium">Create</span>. Copy the Client ID and Client Secret shown.
 						{#if !isLocal}
 							<p class="mt-1.5 text-xs text-muted-foreground">
-								If you also run Calnode locally, add the
+								If you also run District Scheduler locally, add the
 								<code class="rounded bg-muted px-1">http://localhost:3000/…</code> variants of both URIs too.
 							</p>
 						{/if}
@@ -177,7 +177,7 @@
 					<code class="mt-1 block rounded bg-muted px-2 py-1 text-xs font-mono break-all">{redirectBase}/v1/auth/callback</code>
 					{#if !isLocal}
 						<p class="mt-1.5 text-xs text-muted-foreground">
-							If you also run Calnode locally, add the
+							If you also run District Scheduler locally, add the
 							<code class="rounded bg-muted px-1">http://localhost:3000/…</code> variants too.
 						</p>
 					{/if}
