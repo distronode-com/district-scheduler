@@ -38,7 +38,7 @@ magic link), and every route says which of the two it uses.
 
 | key | meaning |
 |---|---|
-| `MULTI_TENANT` | any non-empty value turns the mode on |
+| `MULTI_TENANT` | `1`, `true`, `t`, `yes` is NOT accepted: the value is parsed with `strconv.ParseBool`, and anything it rejects (`yes`, `on`) silently means off |
 | `DATABASE_URL` / `DATABASE_ADMIN_URL` | the pair above |
 | `CALNODE_PLATFORM_TOKEN` | bearer for `/v1/platform/*`. Unset ⇒ those routes 404 |
 | `CALNODE_SSO_SHARED_SECRET` | HMAC key for the session hand-off. **Required** if Google or Microsoft login is configured: the callbacks hand off through it |

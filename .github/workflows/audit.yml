@@ -103,7 +103,7 @@ jobs:
       # tenant column") would fail here by design, so they are replaced rather than
       # scoped off; a check that cannot fail on the repository it runs in guards
       # nothing. The vulnerability/secret scans underneath are useful everywhere.
-      - name: PostgreSQL is the only server-database driver (postgres-image claim)
+      - name: PostgreSQL is the only server-database driver (postgres-image-and-mode claim)
         run: |
           if ! grep -q 'github.com/jackc/pgx/v5' go.mod; then
             echo "::error::go.mod no longer requires pgx; the PostgreSQL image claim in audit/claims.yaml is false"
@@ -114,7 +114,7 @@ jobs:
             exit 1
           fi
 
-      - name: Tenant isolation is row-level security, with its proofs present (rls-tenant-isolation claim)
+      - name: Tenant isolation is row-level security, with its proofs present (row-level-security-tenant-isolation claim)
         run: |
           # RLS is enabled and FORCEd at boot by db.EnableRLS, deliberately not in a
           # migration (see internal/db/tenancy.go); the proof tests are what make the
