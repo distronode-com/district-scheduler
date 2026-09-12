@@ -239,8 +239,12 @@ func (h *Handler) PatchEmailSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A blank display name is rewritten rather than stored, so the From: header is
+	// never a bare address. Keep this in step with config.go's EMAIL_FROM_NAME
+	// default and with mailer.BookingData.Brand(): the three are the same answer to
+	// "who sent this" reached by three different paths.
 	if req.EmailFromName == "" {
-		req.EmailFromName = "Calnode"
+		req.EmailFromName = "District AI Scheduling"
 	}
 
 	boolToInt := func(b bool) int {

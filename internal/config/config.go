@@ -229,7 +229,7 @@ func Load() *Config {
 		SMTPTLS:       getBool("EMAIL_SMTP_TLS", false),
 		SMTPStartTLS:  getBool("EMAIL_SMTP_STARTTLS", false),
 		EmailFrom:     getEnv("EMAIL_FROM_ADDRESS", "bookings@localhost"),
-		EmailFromName: getEnv("EMAIL_FROM_NAME", "Calnode"),
+		EmailFromName: getEnv("EMAIL_FROM_NAME", "District AI Scheduling"),
 
 		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
