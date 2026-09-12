@@ -2,8 +2,9 @@ name: Audit
 
 # Publishes the objective, third-party signals that back AUDIT.md/audit/claims.yaml
 # (OpenSSF Scorecard + SBOM), and re-runs the deterministic half of claims.yaml as a
-# CI gate so a claim silently going false (a new Postgres/MySQL/Redis dependency, a
-# real vulnerability, a leaked secret) fails the build instead of quietly rotting.
+# CI gate so a claim silently going false (a second server-database driver, a tenant
+# table without row-level security, a real vulnerability, a leaked secret) fails the
+# build instead of quietly rotting.
 # This is separate from ci.yml (build/test) — audit signal, not correctness.
 on:
   push:
@@ -61,8 +62,8 @@ jobs:
         with:
           path: .
           format: cyclonedx-json
-          output-file: calnode-sbom.cdx.json
-          artifact-name: calnode-sbom.cdx.json
+          output-file: district-scheduler-sbom.cdx.json
+          artifact-name: district-scheduler-sbom.cdx.json
 
   claims-guard:
     name: Deterministic claims guard
@@ -95,26 +96,39 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # The two claim greps below assert *this project's* architecture (single binary,
-      # no server DB; instance-per-tenant with no tenant column). A fork that changes
-      # either on purpose would fail them by design, so they are scoped to the
-      # canonical repository. The vulnerability/secret scans underneath are useful
-      # everywhere and stay unguarded.
-      - name: No server-DB driver (single-binary-no-server-db claim)
-        if: github.repository == 'Calnode/calnode'
+      # The two claim checks below assert THIS FORK's architecture, which is the
+      # opposite of upstream's on both points: PostgreSQL is the one server database
+      # (SQLite stays for the single-tenant build), and tenants share one database
+      # isolated by row-level security. Upstream's greps ("no server-DB driver", "no
+      # tenant column") would fail here by design, so they are replaced rather than
+      # scoped off; a check that cannot fail on the repository it runs in guards
+      # nothing. The vulnerability/secret scans underneath are useful everywhere.
+      - name: PostgreSQL is the only server-database driver (postgres-image claim)
         run: |
-          if grep -iE 'postgres|mysql|redis' go.mod; then
-            echo "::error::go.mod pulled in a server DB driver — this breaks the single-binary claim in audit/claims.yaml"
+          if ! grep -q 'github.com/jackc/pgx/v5' go.mod; then
+            echo "::error::go.mod no longer requires pgx; the PostgreSQL image claim in audit/claims.yaml is false"
+            exit 1
+          fi
+          if grep -iE 'lib/pq|go-sql-driver/mysql|redis' go.mod; then
+            echo "::error::go.mod pulled in a second server-database driver; re-check audit/claims.yaml"
             exit 1
           fi
 
-      - name: No tenant/workspace column (instance-per-tenant-isolation claim)
-        if: github.repository == 'Calnode/calnode'
+      - name: Tenant isolation is row-level security, with its proofs present (rls-tenant-isolation claim)
         run: |
-          if grep -rl 'tenant_id\|workspace_id' internal/db/migrations/*.sql; then
-            echo "::error::a tenant/workspace column appeared — re-check the instance-per-tenant claim in audit/claims.yaml"
+          # RLS is enabled and FORCEd at boot by db.EnableRLS, deliberately not in a
+          # migration (see internal/db/tenancy.go); the proof tests are what make the
+          # claim falsifiable, so their presence is asserted here and they run in ci.yml.
+          if ! grep -q 'FORCE ROW LEVEL SECURITY' internal/db/tenancy.go; then
+            echo "::error::internal/db/tenancy.go no longer forces row-level security; the isolation claim in audit/claims.yaml is false"
             exit 1
           fi
+          for f in internal/db/rls_proof_test.go internal/db/tenancy_test.go internal/server/tenancy_proof_test.go; do
+            if [ ! -f "$f" ]; then
+              echo "::error::$f is missing; audit/claims.yaml names it as the proof of tenant isolation"
+              exit 1
+            fi
+          done
 
       - name: govulncheck (clean-security-scan claim)
         run: |
@@ -127,9 +141,9 @@ jobs:
           gosec ./...
 
       - name: gitleaks (clean-security-scan claim)
-        # gitleaks/gitleaks-action@v2 now requires a paid GITLEAKS_LICENSE for
-        # organization repos ("Calnode" is one) — the underlying CLI is still
-        # free/open-source (MIT), so install and run it directly instead, the
+        # gitleaks/gitleaks-action@v2 requires a paid GITLEAKS_LICENSE for
+        # organization repositories, which this one is. The underlying CLI is
+        # still free and open source (MIT), so install and run it directly, the
         # same way govulncheck/gosec above do, and the same invocation AUDIT.md
         # documents for a local run.
         run: |
