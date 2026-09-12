@@ -815,9 +815,11 @@ as the desired state:
   logo/banner load (`strictPublicCSP`). Brand is threaded into every send site
   (booking/cancel/reschedule/reassign + worker reminder).
 - Reminders: scheduled as `jobs` and sent by the worker (§13).
-- **Deliverability note (ops):** prod sends via **Resend** SMTP
-  (`smtp.resend.com`, user `resend`, password = API key, STARTTLS); `orchestratr.ai`
-  verified so any `@orchestratr.ai` From works. Email settings are **per-instance in
+- **Deliverability note (ops):** a transactional provider is the expected production
+  path, e.g. **Resend** SMTP (`smtp.resend.com`, user `resend`, password = API key,
+  STARTTLS) or its HTTPS API, with the sending domain verified so any From on it
+  works. ⚠️ This used to name one specific deployment's domain, which was upstream's
+  own and never this fork's. Email settings are **per-instance in
   each DB** (local ≠ prod). NB: Google/Workspace SMTP **rewrites the From** to the
   authenticated account unless it's a verified "Send mail as" alias — that's why a
   dedicated provider is used for branded From. SPF/DKIM/DMARC for the sending domain
