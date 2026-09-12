@@ -86,7 +86,7 @@
 		<div class="rounded-lg border bg-card p-6">
 			<h2 class="text-sm font-semibold">Google Analytics &amp; Tag Manager</h2>
 			<p class="mt-0.5 text-xs text-muted-foreground">
-				Enter an ID and Calnode loads the official tag on your booking page automatically — no snippet to
+				Enter an ID and District Scheduler loads the official tag on your booking page automatically — no snippet to
 				paste, and the page's CSP is handled for you. Leave a field blank to turn that tag off.
 			</p>
 			<div class="mt-4 grid gap-4 sm:grid-cols-2">
