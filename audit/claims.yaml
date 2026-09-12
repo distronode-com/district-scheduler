@@ -27,7 +27,7 @@ claims:
   - id: single-binary-sqlite-build
     claim: >
       With `MULTI_TENANT` unset, this ships as a single static Go binary with an
-      embedded SQLite database. No Postgres, MySQL, or Redis SERVER is required —
+      embedded SQLite database. No Postgres, MySQL, or Redis SERVER is required:
       self-hosting is `docker run` or one binary on a VPS. This is upstream
       Calnode's build, and the fork does not modify the recipe that produces it.
     verify:
@@ -38,10 +38,10 @@ claims:
            git diff upstream/main -- Dockerfile entrypoint.sh litestream.yml
          Expect no output. The fork's own image is a separate file
          (Dockerfile.district) and is the next entry."
-      - "grep -iE 'mysql|redis' go.mod — expect no matches. ⚠️ A grep for
+      - "grep -iE 'mysql|redis' go.mod, expecting no matches. ⚠️ A grep for
          'postgres' DOES match, and that is the claim being precise rather than the
          claim being broken: the two database drivers compiled in are
-         modernc.org/sqlite (pure Go, no CGO — the whole reason CGO_ENABLED=0
+         modernc.org/sqlite (pure Go, no CGO, which is the whole reason CGO_ENABLED=0
          cross-compiles cleanly) and github.com/jackc/pgx/v5. What this entry says
          is that no server is REQUIRED for this build, not that no driver exists.
          An earlier version of this file asserted the grep found nothing, which had
@@ -76,13 +76,14 @@ claims:
       - "Contrast it with upstream's: grep -n -i 'litestream' Dockerfile
          entrypoint.sh litestream.yml matches all three, and Dockerfile.district
          references none of them. (It mentions Litestream only in its header
-         comment, saying why it has none — so grep the two files side by side
+         comment, saying why it has none, so grep the two files side by side
          rather than grepping for the word.)"
       - "internal/config/config.go's Validate, MULTI_TENANT branch: a non-postgres
          DATABASE_URL, a missing DATABASE_ADMIN_URL, and the two DSNs naming one
          role are each a startup error with its own message. Run the image with
          MULTI_TENANT=1 and a sqlite:// DSN and read what it exits with."
-      - ".github/workflows/docker-publish.yml — `file: Dockerfile.district`. The
+      - ".github/workflows/docker-publish.yml, which sets `file:
+         Dockerfile.district`. The
          upstream Dockerfile is not built by this repository's CI at all."
     status: verified
     caveat: >
@@ -94,7 +95,7 @@ claims:
   - id: row-level-security-tenant-isolation
     claim: >
       In `MULTI_TENANT` mode one process serves many isolated workspaces, and the
-      isolation boundary is PostgreSQL row-level security — not a predicate the
+      isolation boundary is PostgreSQL row-level security, not a predicate the
       query author has to remember. Every tenant table carries a workspace_id, has
       ENABLE ROW LEVEL SECURITY, and has exactly one policy comparing that column to
       current_setting('app.workspace_id'). The application role is NOBYPASSRLS and
@@ -102,39 +103,39 @@ claims:
       silently empty rather than silently global. With the variable unset, none of
       this is reachable and single-tenant behaviour is unchanged.
     verify:
-      - "internal/db/rls_proof_test.go —
+      - "internal/db/rls_proof_test.go's
          TestPostgres_rlsIsolatesAnUnprivilegedRole is the executable proof.
          Unbound, the application role reads 0 of 2 seeded rows and its INSERT is
          refused with SQLSTATE 42501, leaving nothing behind in the default
          workspace; bound, it reads and writes exactly its own. It carries a
          positive control on the DATA (the owner role sees both rows first), so a
          zero cannot be an empty table."
-      - "internal/db/tenancy_test.go — the schema half:
+      - "internal/db/tenancy_test.go, the schema half:
          TestPostgres_exactlyOnePolicyPerTenantTable,
          TestPostgres_exemptTablesHaveNoTenantColumn,
          TestPostgres_rlsIsOffUntilEnabled,
          TestPostgres_appRoleCannotWriteTheTenantRoot,
          TestPostgres_compositeUniqueness, and TestSQLite_enableRLSIsANoOp."
-      - "internal/server/tenancy_proof_test.go — the request half, end to end:
+      - "internal/server/tenancy_proof_test.go, the request half, end to end:
          TestProof_noRouteLeaksAnotherWorkspace, TestProof_everyMCPToolIsScoped,
          TestProof_everyWorkerJobTypeIsCoveredAndScoped, and
          TestProof_unscopedQueryReturnsNothing, which is the negative control."
       - "internal/handler/caldav_connect_tenancy_test.go,
          calendar_reconcile_tenancy_test.go, calendar_tenancy_test.go,
-         sso_tenancy_test.go and tracking_tenancy_test.go — the per-handler tests
+         sso_tenancy_test.go and tracking_tenancy_test.go, the per-handler tests
          for the paths that resolve a workspace from something other than the
          request Host."
       - "internal/db's VerifyRoles, called at boot: it refuses an application role
          that is a superuser, holds BYPASSRLS, or owns any table, and refuses a
          platform role that does NOT bypass. A single role for both DSNs is the
-         misconfiguration hardest to notice from the outside — every request works,
-         and it can also read every other workspace — so startup refuses it
+         misconfiguration hardest to notice from the outside (every request works,
+         and it can also read every other workspace), so startup refuses it
          outright."
       - "⛔ All of the above need a real PostgreSQL. Export
          CALNODE_TEST_POSTGRES_DSN=postgres://... and run
          `go test ./internal/db/ ./internal/server/ ./internal/handler/`. WITHOUT
          it every PostgreSQL case SKIPS and a green run proves nothing about this
-         claim — read the skip count before you believe the result."
+         claim. Read the skip count before you believe the result."
       - "Run the tenant-isolation prompt in audit/prompts/prompt-pack.md against
          your own LLM to have it try to find a cross-tenant path."
     status: verified
@@ -145,7 +146,7 @@ claims:
       *is* the owner, so every existing deployment whose DSN is not a superuser
       would go blind. ENABLE alone already isolates a non-owner role, which is what
       the application role is.
-      (2) There is a handle that bypasses the policies on purpose — the platform
+      (2) There is a handle that bypasses the policies on purpose: the platform
       handle, which runs migrations, the worker's cross-tenant claim loop and the
       platform API. Five tables are exempt from tenancy because they are not per
       tenant (workspaces, crypto_keystore, goose_db_version, oauth_clients,

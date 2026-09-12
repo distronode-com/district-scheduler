@@ -139,7 +139,7 @@ app you must `pnpm build` in `frontend/` **and** rebuild/restart the Go binary
   `ALTER TABLE ADD COLUMN` is reversible-by-convention only (SQLite can't easily
   drop columns).
 
-### ⛔ A TEXT timestamp column must be `COLLATE "C"` — PostgreSQL only
+### ⛔ A TEXT timestamp column must be `COLLATE "C"` (PostgreSQL only)
 
 Timestamps are stored as TEXT, and ~20 predicates in the tree compare them
 lexicographically (`run_at <= ?`, `expires_at > ?`, `locked_until < ?`, the
@@ -1492,7 +1492,7 @@ and nothing below is reachable.
   The tenant-scoped copies exist and so do `idx_jobs_pending_global (run_at)` and
   `idx_jobs_running_expired_global (locked_until)` alongside them.
 
-**Full contract: [MULTI_TENANT.md](MULTI_TENANT.md)** — the isolation model in three
-layers, the whole environment, what a tenant credential cannot do and why per row,
-route classification, the SSO hand-off, export/import/erasure, and the operator
+**Full contract: [MULTI_TENANT.md](MULTI_TENANT.md).** It covers the isolation model in
+three layers, the whole environment, what a tenant credential cannot do and why per
+row, route classification, the SSO hand-off, export/import/erasure, and the operator
 checklist. §16 covers how the two shapes deploy.
