@@ -15,14 +15,17 @@
 		caldav: 'CalDAV (Apple iCloud, Fastmail, Nextcloud)'
 	};
 
-	// Where to send an admin for each provider Calnode supports but this instance hasn't
-	// been given credentials for. Google is self-serve (a settings page); Microsoft is
-	// currently env-var-only, so it points at the docs instead of a form.
+	// Where to send an admin for each provider District Scheduler supports but this
+	// instance hasn't been given credentials for. Google is self-serve (a settings
+	// page); Microsoft is currently env-var-only, so it points at the docs instead of
+	// a form. ⛔ The docs link is THIS fork's .env.example, not upstream's: upstream's
+	// does not carry the seven fork-only variables, so an operator following it would
+	// configure an instance that will not boot.
 	const UNCONFIGURED_SETUP: Record<string, { text: string; href: string; external?: boolean }> = {
 		google: { text: 'Set up in Settings → Google OAuth', href: '/admin/settings/google' },
 		microsoft: {
 			text: 'See setup docs',
-			href: 'https://github.com/Calnode/calnode/blob/main/.env.example',
+			href: 'https://github.com/distronode-corporation/district-scheduler/blob/district/.env.example',
 			external: true
 		}
 	};

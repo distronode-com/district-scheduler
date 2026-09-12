@@ -45,7 +45,7 @@
 	}
 </script>
 
-<svelte:head><title>Set up Calnode</title></svelte:head>
+<svelte:head><title>Set up District Scheduler</title></svelte:head>
 
 <div class="flex min-h-screen items-center justify-center bg-muted/30 p-6">
 	<div class="w-full max-w-sm">
@@ -56,7 +56,7 @@
 					<path fill="#ffffff" d="M 13.529898,23.489202 c 0.41676,-0.42858 2.30921,-2.34577 4.20548,-4.26044 3.89443,-3.93222 3.79896,-3.77881 2.93494,-4.71617 -0.86333,-0.9366 -0.70987,-1.03489 -4.7574,3.04728 -2.01816,2.03542 -3.63135,3.56753 -3.70704,3.52074 -0.0737,-0.0455 -0.86549,-0.83379 -1.759495,-1.7516 -1.7365396,-1.78282 -2.1646795,-2.10404 -2.5380305,-1.90423 -0.40259,0.21546 -1.13741,1.12099 -1.13741,1.40162 0,0.18848 0.79327,1.06899 2.5741409,2.85723 3.0861346,3.09893 2.9741146,3.05059 4.1848146,1.80557 z"/>
 				</svg>
 			</div>
-			<h1 class="text-xl font-semibold tracking-tight">Welcome to Calnode</h1>
+			<h1 class="text-xl font-semibold tracking-tight">Welcome to District Scheduler</h1>
 			<p class="mt-1 text-sm text-muted-foreground">You're the first here — create your owner account.</p>
 		</div>
 

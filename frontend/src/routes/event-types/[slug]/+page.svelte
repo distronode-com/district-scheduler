@@ -23,7 +23,7 @@
 		{ value: 'zoom',         label: 'Zoom' },
 		{ value: 'teams',        label: 'Microsoft Teams' },
 		{ value: 'google_meet',  label: 'Google Meet' },
-		{ value: 'livekit',      label: 'Calnode Video (LiveKit)' },
+		{ value: 'livekit',      label: 'Built-in video (LiveKit)' },
 		{ value: 'phone',        label: 'Phone call' },
 		{ value: 'link',         label: 'Video link' },
 		{ value: 'in_person',    label: 'In person' },

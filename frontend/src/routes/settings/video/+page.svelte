@@ -65,7 +65,7 @@
 			if (apiSecret) body.api_secret = apiSecret;
 			settings = await api.patch<LiveKitSettings>('/v1/settings/livekit', body);
 			apiSecret = '';
-			toast.success('Saved — "Calnode Video (LiveKit)" is now selectable as an event location');
+			toast.success('Saved — "Built-in video (LiveKit)" is now selectable as an event location');
 		}, 'Could not save video settings');
 	}
 
@@ -116,7 +116,7 @@
 					</li>
 					<li class="flex gap-3">
 						<span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">3</span>
-						<div>Paste them below and save. Bookings using "Calnode Video (LiveKit)" then get a built-in room — no per-host connection needed.</div>
+						<div>Paste them below and save. Bookings using "Built-in video (LiveKit)" then get a built-in room — no per-host connection needed.</div>
 					</li>
 				</ol>
 			</div>
@@ -125,7 +125,7 @@
 		<div class="rounded-lg border bg-card p-6">
 			<div class="mb-4 flex items-start justify-between gap-2">
 				<div>
-					<h2 class="text-sm font-semibold">Calnode Video (LiveKit)</h2>
+					<h2 class="text-sm font-semibold">Built-in video (LiveKit)</h2>
 					<p class="mt-0.5 text-xs text-muted-foreground">
 						Built-in video meetings hosted on your LiveKit server. Each booking gets a room link;
 						guests join in the browser — no account or app required.

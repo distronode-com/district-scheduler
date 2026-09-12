@@ -19,9 +19,19 @@
 	let recordingsConfigured = $state(false);
 	let version = $state('');
 
-	const ISSUES_URL = 'https://github.com/Calnode/calnode/issues';
-	const NEW_ISSUE_URL = 'https://github.com/Calnode/calnode/issues/new/choose';
-	const RELEASES_URL = 'https://github.com/Calnode/calnode/releases';
+	// ⛔ These point at THIS fork, not at upstream. They used to send an operator of a
+	// District Scheduler instance to Calnode/calnode, where a bug in fork-only code
+	// (multi-tenant mode, the platform API, the PostgreSQL engine) is nobody's to fix
+	// and the reporter is turned away. UPSTREAM_URL is the deliberate escape hatch for
+	// the other case: a bug in shared code belongs upstream, where every deployment
+	// gets the fix, and .github/SUPPORT.md says the same thing in prose.
+	const REPO_URL = 'https://github.com/distronode-corporation/district-scheduler';
+	const ISSUES_URL = `${REPO_URL}/issues`;
+	const NEW_ISSUE_URL = `${REPO_URL}/issues/new/choose`;
+	const UPSTREAM_URL = 'https://github.com/Calnode/calnode';
+	// The version string links the repository rather than a releases page: this fork
+	// ships by digest and cuts no release lines, so /releases would be an empty page.
+	const VERSION_URL = REPO_URL;
 
 	const isLogin = $derived($page.route.id === '/login');
 	const isPublicRoute = $derived(
@@ -263,7 +273,7 @@
 				</button>
 				{#if version}
 					<a
-						href={RELEASES_URL}
+						href={VERSION_URL}
 						target="_blank"
 						rel="noopener noreferrer"
 						class="mt-1 block px-2.5 py-1 text-xs text-sidebar-foreground/35 transition-colors hover:text-sidebar-foreground/60"
@@ -289,8 +299,10 @@
 				<Dialog.Title>Report an issue</Dialog.Title>
 				<Dialog.Description>
 					Please <strong>search the existing issues first</strong> — it may already be reported or being
-					worked on. The tracker is for <strong>reproducible bugs</strong> in Calnode; for setup help or
-					“how do I…” questions, please use Discussions instead.
+					worked on. The tracker is for <strong>reproducible bugs</strong> in District Scheduler; for setup
+					help or “how do I…” questions, please use Discussions instead. If the bug is in
+					<a href={UPSTREAM_URL} target="_blank" rel="noopener noreferrer" class="underline">upstream Calnode</a>
+					rather than in this fork, reporting it there gets every deployment the fix.
 				</Dialog.Description>
 			</Dialog.Header>
 			<Dialog.Footer class="gap-2 sm:justify-between">

@@ -198,7 +198,7 @@
 			<div class="mt-4 space-y-1.5">
 				<Label for="business-name">Business name</Label>
 				<Input id="business-name" bind:value={businessName} placeholder="Orchestratr" maxlength={200} />
-				<p class="text-xs text-muted-foreground">Used where there's no logo. Falls back to “Calnode” if left blank.</p>
+				<p class="text-xs text-muted-foreground">Used where there's no logo. Falls back to “District AI Scheduling” if left blank.</p>
 			</div>
 
 			<div class="mt-5 space-y-3">

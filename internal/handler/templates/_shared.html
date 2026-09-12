@@ -134,7 +134,7 @@
 
 {{define "demoNoindex"}}{{if .DemoMode}}<meta name="robots" content="noindex,nofollow">{{end}}{{end}}
 
-{{define "demoBanner"}}{{if .DemoMode}}<div class="demo-banner"><strong>{{call .T "demo_public_label"}}</strong> — {{call .T "demo_public_text"}} <a href="https://github.com/Calnode/calnode" target="_blank" rel="noopener noreferrer">{{call .T "demo_view_source"}}</a></div>{{end}}{{end}}
+{{define "demoBanner"}}{{if .DemoMode}}<div class="demo-banner"><strong>{{call .T "demo_public_label"}}</strong> — {{call .T "demo_public_text"}} <a href="https://github.com/distronode-corporation/district-scheduler" target="_blank" rel="noopener noreferrer">{{call .T "demo_view_source"}}</a></div>{{end}}{{end}}
 
 {{/* Month nav + the day grid. The grid (#cal) is empty here and filled by
      booking-logic.js. Each page wraps this in its own <section> (book shows it

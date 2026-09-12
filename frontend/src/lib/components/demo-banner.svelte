@@ -35,7 +35,7 @@
 		<span class="font-semibold">Public demo</span> — data here is visible to everyone and resets
 		automatically. Don't enter anything private.
 		<a
-			href="https://github.com/Calnode/calnode"
+			href="https://github.com/distronode-corporation/district-scheduler"
 			target="_blank"
 			rel="noopener noreferrer"
 			class="ml-1 font-medium underline"
