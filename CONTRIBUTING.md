@@ -122,12 +122,12 @@ Background and the full list of limitations (2-form plurals, no RTL) are in
 2. `go test ./...` green; `make build` succeeds; run `pnpm test:visual` if you
    touched UI/theme.
 3. Keep the change focused; explain the *why* in the PR description.
-4. **Contributor License Agreement.** First-time contributors are asked to sign our
-   [CLA](CLA.md) — a bot comments on your PR with a one-line phrase to post. You keep the
-   copyright to your work; the CLA just lets the project distribute it and license future
-   versions under different terms if needed (e.g. a hosted edition). It's a one-time signature.
-   *(This is a CLA, not a DCO: a DCO only certifies origin, whereas retaining relicensing
-   rights requires a CLA.)*
+4. **No contributor licence agreement here.** Contributions to this fork are accepted
+   under [Apache-2.0](LICENSE) section 5, which is to say under the licence the file you
+   are editing already carries. There is nothing to sign and no bot will comment. If your
+   change is one we forward to upstream Calnode, upstream's own CLA applies to it there,
+   and we will say so on the pull request before sending it.
 
-The project's distributed code remains [Apache-2.0](LICENSE). "Calnode" is a project name/mark —
-see [TRADEMARK.md](TRADEMARK.md) for how you may (and may not) use it.
+The distributed code remains [Apache-2.0](LICENSE). "Calnode" is upstream's project
+name and mark — see [TRADEMARK.md](TRADEMARK.md) for how you may (and may not) use it,
+and [NOTICE](NOTICE) for this fork's attribution.
