@@ -30,10 +30,11 @@ import (
 //     COALESCE(current_setting('app.workspace_id', true), 'default'), and the platform
 //     handle sets that parameter to '' before each statement, so an unnamed column
 //     resolves to '' and the row fails its foreign key to workspaces(id) with SQLSTATE
-//     23503. (An earlier note in PROGRESS.md said such a row lands silently in the
-//     `default` workspace; that is what happens on a handle that never sets the
-//     parameter at all, not on the paired platform handle. The rule is the same either
-//     way, and it is the reason it is stated here rather than assumed.)
+//     23503. (A row landing silently in the `default` workspace is a DIFFERENT
+//     failure, and it is the one people expect here: that is what happens on a handle
+//     which never sets the parameter at all, not on the paired platform handle, which
+//     sets it to ''. The rule is the same either way, and that is the reason it is
+//     stated here rather than assumed.)
 //   - Reads are equally unscoped, so every one of them carries its own workspace_id
 //     predicate. There is no policy behind this file to catch a forgotten WHERE.
 //

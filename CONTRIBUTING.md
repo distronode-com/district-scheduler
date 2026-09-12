@@ -1,4 +1,4 @@
-# Contributing to Calnode
+# Contributing to District Scheduler
 
 Thanks for considering a contribution! This guide covers getting the app building,
 running, and tested locally. For *how the system fits together*, read

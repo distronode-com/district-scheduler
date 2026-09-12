@@ -1,4 +1,4 @@
-# Calnode — Architecture
+# District Scheduler — Architecture
 
 Status: living doc. The source of truth is the code; this explains how the pieces
 fit and *why*. File references point at packages/symbols (`internal/...`). New to the
@@ -6,17 +6,31 @@ codebase? Start here, then see [CONTRIBUTING.md](../CONTRIBUTING.md) for build/t
 
 ---
 
-## 1. What Calnode is
+## 1. What District Scheduler is
 
 A self-hostable scheduling/booking app (Calendly-style) shipped as a **single Go
 binary**. The Go server embeds the built SvelteKit admin SPA at compile time and
-also serves the public, server-rendered booking pages. Persistence is **SQLite**.
-Primary focus: **self-hosting**; the longer-term direction is instance-per-tenant
-managed hosting (foundational pieces — envelope crypto, host split, readiness gate —
-are already in place; see §16).
+also serves the public, server-rendered booking pages. Persistence is **SQLite or
+PostgreSQL**, selected by the `DATABASE_URL` scheme (§4).
 
-One process, one file (`data/calnode.db`), no external services required to run
-(SMTP and Google are optional integrations configured at runtime).
+One binary, two deployment shapes:
+
+- **Single tenant**, the default and upstream Calnode's own shape. One process, one
+  file (`data/calnode.db`), no external services required to run (SMTP and Google
+  are optional integrations configured at runtime). Nothing on the request path
+  carries a tenant predicate, because there is no tenant to resolve.
+- **Multi tenant**, when `MULTI_TENANT` is set. One process serves many isolated
+  workspaces on PostgreSQL, the isolation boundary is row-level security in the
+  database rather than a predicate a query author has to remember, and an external
+  platform provisions workspaces over an API. See §25 and
+  [MULTI_TENANT.md](MULTI_TENANT.md).
+
+This repository is Distronode Corporation's fork of
+[Calnode](https://github.com/Calnode/calnode). The PostgreSQL support, the
+multi-tenant mode and the PostgreSQL-only image are the fork's; everything else is
+upstream's. With `MULTI_TENANT` unset the two behave identically, and that is a gate
+rather than an aspiration: every test that existed before the mode passes without
+modification.
 
 ---
 
@@ -124,6 +138,39 @@ app you must `pnpm build` in `frontend/` **and** rebuild/restart the Go binary
   one schema, two spellings, same version numbers. Run automatically on startup.
   `ALTER TABLE ADD COLUMN` is reversible-by-convention only (SQLite can't easily
   drop columns).
+
+### ⛔ A TEXT timestamp column must be `COLLATE "C"` — PostgreSQL only
+
+Timestamps are stored as TEXT, and ~20 predicates in the tree compare them
+lexicographically (`run_at <= ?`, `expires_at > ?`, `locked_until < ?`, the
+`start_at`/`end_at` overlap, several `ORDER BY created_at`). SQLite's BINARY
+collation *is* memcmp, so those comparisons are byte order there. PostgreSQL's
+default is the database's own collation, which is not. Migration 00059 therefore
+pins `COLLATE "C"` on **54 columns across 27 tables**: every `*_at`, plus
+`availability_rules.start_time`/`end_time` and `availability_overrides.date`/
+`start_time`/`end_time`, which hold `HH:MM` and `YYYY-MM-DD` and are ordered as
+times too. The SQLite half of that migration is an intentional no-op file.
+
+Fixed in the schema rather than in the predicates on purpose: a `COLLATE "C"`
+clause on each of ~20 comparisons is ~20 chances to forget one, and forgetting is
+silent. ⚠️ The load-bearing site is `internal/handler/notetaker.go`, which writes
+`datetime('now')`'s space-separated shape *because* it sorts before any
+`T`-separated stamp, which is what makes a notetaker job due immediately. That is a
+production dependency on byte ordering, not a theoretical one.
+
+`internal/db/collation_test.go` is the guard, and it matters that it holds three
+things rather than one. (a) An audit over `information_schema.columns` matching by
+column NAME, so a timestamp column added by a later migration is caught without
+anyone remembering this rule. (b) An ordering control that **skips naming the
+server's collation** when the server's default already orders byte-wise, rather
+than passing vacuously: on `en_US.utf8` the two shapes the schema actually stores
+do not flip, and neither do they under any of the other 878 collations on that
+server, so a control built only on those would be green with or without the
+migration. It therefore also carries RFC 3339's permitted lower-case `t`/`z`
+spelling, where the two orders genuinely differ. (c) An ordering test on
+`jobs.run_at` through the worker's real claim predicate. ⛔ `SHOW lc_collate` is a
+dead end for checking a server: it stopped being a GUC in PostgreSQL 16 and errors
+with "unrecognized configuration parameter". Read `datcollate` from `pg_database`.
 
 ### ⚠️ The single-connection gotcha (bit us once) — SQLite only
 
@@ -849,13 +896,24 @@ as the desired state:
 
 ## 16. Deployment & control-plane direction
 
-- Today: single self-hosted binary + SQLite. `make build` (frontend then backend),
-  run `./calnode`.
-- Direction: **instance-per-tenant** managed hosting. The foundational pieces are in
-  place — envelope encryption, `PUBLIC_BASE_URL` split, version stamp, readiness gate.
-  Custom domains: a tenant points `book.acme.com` at their instance;
-  `PUBLIC_BASE_URL` drives booker-facing links/emails while `BASE_URL` stays the
-  identity host for OAuth/admin. Managed SaaS provisioning is later/lower priority.
+- Today, two shapes from one binary. **Single tenant:** `make build` (frontend then
+  backend), run `./calnode`, SQLite on a volume. **Multi tenant:** the fork's
+  PostgreSQL-only image (`Dockerfile.district`) with `MULTI_TENANT` set, which is what
+  District AI runs in four regions. See §25.
+- **The control plane is external, by decision.** `MULTI_TENANT` gives an operator's
+  own platform a provisioning API, a signed session hand-off onto each workspace's
+  own domain, and an off switch for the embedded console (`ADMIN_SPA=off`), rather
+  than growing a control plane inside this binary. Custom domains work in both
+  shapes: a workspace's `public_host` (multi-tenant) or `PUBLIC_BASE_URL`
+  (single-tenant) drives booker-facing links and emails, while `BASE_URL` stays the
+  identity host for OAuth and admin.
+- ⛔ **Instance-per-tenant is no longer the direction, and this section said it was.**
+  It described managed hosting as one deployment per customer, with the multi-tenant
+  question deferred. That plan was replaced: one process, many workspaces, and a
+  boundary the database enforces. The foundational pieces the old note named are all
+  still here and all still load-bearing (envelope encryption, the
+  `BASE_URL`/`PUBLIC_BASE_URL` split, the version stamp, the readiness gate), which
+  is why the plan could change without the groundwork being wasted.
 - **Behind a reverse proxy (Fly / Railway / nginx) — required:** forward the
   **original `Host` header**. The CSRF same-origin check (§6) compares the request's
   `Origin`/`Referer` against `Host`, so a proxy that rewrites Host would *false-block
@@ -1381,3 +1439,58 @@ matching section in the same PR. Notable rounds:
   location validation** for every type + smart default + picker reorder, and
   **Microsoft OAuth sign-in** (`/v1/auth/microsoft/*`, identity-only). Touched §3,
   §4, §6, §10. Known constraint: Teams auto-links need a work account (§18).
+
+---
+
+## 25. Multi-tenant mode
+
+The fork's mode, and the reason this repository exists separately from upstream.
+Set `MULTI_TENANT` and one process serves many isolated workspaces; leave it unset
+and nothing below is reachable.
+
+- **PostgreSQL only, two roles, two DSNs.** `DATABASE_ADMIN_URL` is the platform
+  role (schema owner, `BYPASSRLS`) that runs migrations, the worker's cross-tenant
+  claim loop and the platform API. `DATABASE_URL` is the application role
+  (`NOBYPASSRLS`, owning no table) that every request runs as. ⛔ One role for both
+  means the policies are inert against the application and nothing breaks: every
+  request works, and it can also read every other workspace. Startup refuses it,
+  along with a non-postgres DSN (SQLite has no row-level security to express the
+  isolation with) and an application role that is a superuser, bypasses, or owns a
+  table (`VerifyRoles`).
+- **Row-level security is the boundary.** A `workspaces` table is the tenant root,
+  every tenant table carries `workspace_id` with one policy comparing it to
+  `current_setting('app.workspace_id', true)`, and an unset setting matches no row,
+  so an unbound statement is silently empty rather than silently global. `FORCE ROW
+  LEVEL SECURITY` is deliberately not used: it would confine the table owner too,
+  and single-tenant's ordinary DSN *is* the owner.
+- **Binding is per statement**, not per connection: a bound handle takes a pooled
+  connection, `set_config`s the workspace, runs the statement and releases it, so a
+  handle is safe to copy into a goroutine that outlives its request. `Prepare` is
+  refused on a bound handle, because a prepared statement is re-prepared on whatever
+  connection the pool hands it and would run unbound.
+- **A request's tenant comes from its `Host` or from its credential**, every route
+  declares which, and a source-scanning test fails on a registration that declares
+  neither. An unknown host is a 404 rather than a fallback to a default tenant.
+- **The platform API** (`/v1/platform/*`, bearer `CALNODE_PLATFORM_TOKEN`, 404 when
+  unset or single-tenant) provisions a workspace in one transaction and carries
+  export, import, per-attendee erasure and the member/API-key routes.
+- **What is not per tenant:** the data encryption key (one wrapped DEK per process),
+  the OAuth app credentials, the rate-limit counters and the retention sweeps.
+- **CLI subcommands** differ by what they touch: `rotate-key` and `recover-key` are
+  unchanged (`crypto_keystore` is exempt from tenancy), `reset-admin` **requires
+  `--workspace=<id>`** because `users` is unique on `(workspace_id, email)` and an
+  unscoped `WHERE email = ?` resets every workspace that shares an address, and
+  `calnode mcp` (stdio) is **refused**, because the transport carries neither a
+  credential nor a Host and the tools would run on an unbound handle that matches
+  nothing. The classification is data (`platformWideCLI`) with a test asserting it.
+- ⚠️ **Do not prepend `workspace_id` to a `jobs` index.** `jobs` is the one table
+  worked *across* tenants: the worker's claim and its crash-recovery reaper run on
+  the platform handle with no workspace predicate, ordered globally by `run_at` /
+  `locked_until`, and a workspace-leading index cannot serve an ordered global scan.
+  The tenant-scoped copies exist and so do `idx_jobs_pending_global (run_at)` and
+  `idx_jobs_running_expired_global (locked_until)` alongside them.
+
+**Full contract: [MULTI_TENANT.md](MULTI_TENANT.md)** — the isolation model in three
+layers, the whole environment, what a tenant credential cannot do and why per row,
+route classification, the SSO hand-off, export/import/erasure, and the operator
+checklist. §16 covers how the two shapes deploy.

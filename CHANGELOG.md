@@ -1,15 +1,46 @@
 # Changelog
 
-All notable changes to Calnode are recorded here. The format follows
+All notable changes to District Scheduler are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-**Pre-1.0 note:** while Calnode is in the `0.x` series, a **minor** bump (e.g.
-`0.1` → `0.2`) may include breaking changes to the API, schema, or config. Pin an
-exact tag (`ghcr.io/calnode/calnode:0.1.0`) if you need stability between upgrades.
-`1.0.0` will mark the point at which the API and schema are declared stable.
+**This fork ships by digest, not by a release line.** A push to `district` publishes
+`ghcr.io/distronode-corporation/district-scheduler:edge` and `:sha-<short>`; nothing
+publishes `:latest`, there are no fork release tags and there are no backports. The
+version headings below are therefore **upstream Calnode's**, kept so the two
+histories line up and so an entry can sit in the release it actually belongs to. Pin
+the digest of the image you tested. `[Unreleased]` is what `district` carries beyond
+upstream's newest release.
+
+**Pre-1.0 note:** while the `0.x` series lasts, a **minor** bump (e.g. `0.1` → `0.2`)
+may include breaking changes to the API, schema, or config. `1.0.0` will mark the
+point at which the API and schema are declared stable.
 
 ## [Unreleased]
+
+### Fork
+
+Entries below are a mixture, and which is which decides where a patch should go:
+
+- **Fork-authored, merged upstream.** Written here, sent upstream, and merged there,
+  so they also appear in upstream's own `[0.9.0]`. Listed once, here, because on this
+  branch they have never been in a tagged release: duplicating an event type, the
+  empty-day and minimum-notice explanations, `TRUSTED_PROXY_CIDRS`, constraint
+  violations by error code, and the event-type creation fixes.
+- **Fork-authored, pending upstream.** `fr-CA`, `GET /metrics`, `FRAME_ANCESTORS`,
+  `STT_BASE_URL`, the `booking.reminder` webhook event and sign-out-everywhere are
+  ours and are open pull requests upstream, so they may appear in a later upstream
+  release under upstream's own wording.
+- **Fork-only, and staying that way.** PostgreSQL support, `MULTI_TENANT` and
+  everything under it (the platform API, the signed session hand-off, `ADMIN_SPA`,
+  `PLATFORM_RETURN_ORIGINS`, the neutral tenant root), and the
+  `Dockerfile.district` image. PostgreSQL ([#29]) and `MULTI_TENANT` ([#31]) were
+  declined upstream in September 2026 on architectural grounds, so these will never
+  appear in an upstream changelog.
+- Anything carrying no note is upstream's, inherited.
+
+[#29]: https://github.com/Calnode/calnode/pull/29
+[#31]: https://github.com/Calnode/calnode/pull/31
 
 ### Security
 - **A booker's email address is validated where it enters, and is never written into an
@@ -211,6 +242,35 @@ exact tag (`ghcr.io/calnode/calnode:0.1.0`) if you need stability between upgrad
   `defaults.event_type` takes `location_type` and `location_value`, both optional and both
   checked before anything is written, so a value the editor would reject is answered 400
   with the reason rather than provisioned and discovered later.
+
+## [0.9.0] - 2026-09-10
+
+**Upstream's release, recorded here for alignment rather than reproduced.** Five of
+its entries were authored on this fork, sent upstream and merged there, so they are
+already written out under `[Unreleased]` above and are not repeated: duplicating an
+event type ([#17]), the empty-day and minimum-notice explanations ([#20]),
+constraint violations recognised by error code, `TRUSTED_PROXY_CIDRS`, and the
+event-type creation fixes. Read
+[upstream's 0.9.0](https://github.com/Calnode/calnode/blob/main/CHANGELOG.md) for
+its own wording.
+
+⚠️ **Two of upstream's 0.9.0 changes are NOT in this fork yet**, and they are the
+whole reason this section says something rather than nothing:
+
+- **An event type's booking link can be renamed until its first booking.** Upstream's
+  `PATCH /v1/event-types/{slug}` accepts `slug` and refuses with 409 once bookings
+  exist. This fork's `PatchEventType` does not accept the field, so a duplicate
+  arrives as `<slug>-copy` and there is no way to rename it short of deleting and
+  recreating it.
+- **`BookingLogic.bookableDayKeys` and `book.html`'s `bookableDates` were removed**
+  upstream as dead code. Both are still present here.
+
+Neither is a divergence anybody decided on: they are the sync gap from a release that
+landed while this fork was on its own branch. Closing it is the 0.9.0 sync, tracked
+separately.
+
+[#17]: https://github.com/Calnode/calnode/issues/17
+[#20]: https://github.com/Calnode/calnode/issues/20
 
 ## [0.8.0] - 2026-09-03
 

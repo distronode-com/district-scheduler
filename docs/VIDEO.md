@@ -1,14 +1,13 @@
-# Calnode Rooms — video setup guide
+# Built-in video meetings — setup guide
 
-Calnode Rooms is Calnode's built-in video meeting feature: a LiveKit-backed, in-browser
-meeting room usable as a booking location, the same way you'd use Zoom or Google Meet —
-except it's infrastructure you control. Guests join with a link; no app install or
-account required.
+Built-in video is a LiveKit-backed, in-browser meeting room usable as a booking
+location, the same way you'd use Zoom or Google Meet — except it's infrastructure you
+control. Guests join with a link; no app install or account required.
 
-It's **BYO-LiveKit**: Calnode doesn't run or bundle a LiveKit server. You point Calnode
-at a LiveKit project (Cloud or self-hosted), and Calnode handles token minting, the room
-UI, recording, consent, and the AI notetaker on top. This doc covers the Calnode-specific
-config — LiveKit's own docs cover standing up LiveKit itself.
+It's **BYO-LiveKit**: this app doesn't run or bundle a LiveKit server. You point it
+at a LiveKit project (Cloud or self-hosted), and it handles token minting, the room
+UI, recording, consent, and the AI notetaker on top. This doc covers the config on
+this side — LiveKit's own docs cover standing up LiveKit itself.
 
 For architecture-level detail (token model, host authority, egress lifecycle), see
 `docs/ARCHITECTURE.md` §22.
@@ -24,20 +23,20 @@ Go to **Settings → Video** and fill in three fields:
 | **API Secret** | (stored encrypted — shows a placeholder once saved, never re-displayed) |
 
 These map directly to `PATCH /v1/settings/livekit`: `{"url": "...", "api_key": "...", "api_secret": "..."}`.
-Once set, **"Calnode Video (LiveKit)"** becomes a selectable location on any event type.
+Once set, the **built-in video** location becomes selectable on any event type.
 
 ### Option A — LiveKit Cloud (fastest)
 
 1. Create a project at [cloud.livekit.io](https://cloud.livekit.io).
 2. Copy the **WebSocket URL**, **API Key**, and **API Secret** from the project's Settings tab.
-3. Paste them into Calnode's **Settings → Video**.
+3. Paste them into **Settings → Video**.
 
 ### Option B — self-hosted LiveKit
 
 Follow LiveKit's own deployment guide to stand up your server:
 [docs.livekit.io/home/self-hosting/deployment](https://docs.livekit.io/home/self-hosting/deployment/).
-Calnode doesn't need anything LiveKit-specific beyond a reachable WebSocket URL and an
-API key/secret pair — once your server is running, point Calnode at it exactly the same
+Nothing LiveKit-specific is needed beyond a reachable WebSocket URL and an
+API key/secret pair — once your server is running, point this app at it exactly the same
 way as the Cloud path above.
 
 ## 2. Recording → your bucket
@@ -84,14 +83,14 @@ Three prerequisites, all required:
 
 1. Recording enabled (§2).
 2. A Deepgram API key entered in **Settings → Video** (`stt_api_key`).
-3. An LLM configured (**Settings → AI**) — Calnode never ships its own model.
+3. An LLM configured (**Settings → AI**) — no model is ever shipped with the binary.
 
 Be honest about what actually happens — this is a mixed self-hosted/third-party pipeline:
 
 - **Transcription is not self-hosted.** The finished recording is never downloaded by
-  Calnode — it hands Deepgram a short-lived presigned URL to the file directly, so the
+  this app — it hands Deepgram a short-lived presigned URL to the file directly, so the
   audio does leave your server and go to Deepgram's API.
-- **Summarization uses your own LLM.** Once the transcript comes back, Calnode sends it
+- **Summarization uses your own LLM.** Once the transcript comes back, it is sent
   to whichever LLM endpoint you configured (BYO-LLM) to generate the meeting notes —
   that part stays on infrastructure you control.
 - **It's post-meeting, not live.** Transcription and summarization both run

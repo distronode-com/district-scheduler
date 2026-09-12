@@ -1,21 +1,48 @@
-# Deploying Calnode
+# Deploying District Scheduler
 
-Calnode is a **single Go binary** that embeds the admin SPA and serves the public
-booking pages, with **SQLite** on a persistent volume. No separate database,
-cache, or web server. The official multi-arch image (amd64 + arm64) is built by CI
-from the repo `Dockerfile` (multi-stage: build the SvelteKit admin → compile Go →
-small Alpine runtime) and published to GHCR:
+One binary, two images, and which one you want depends on whether you are running
+one workspace or many.
+
+## This fork's image: PostgreSQL, multi-tenant
+
+`ghcr.io/distronode-corporation/district-scheduler`, built by CI from
+`Dockerfile.district` (multi-stage: build the SvelteKit admin → compile Go →
+distroless static runtime, non-root, uid 10001). No SQLite file, no Litestream, no
+shell entrypoint. This is what District AI runs.
+
+| Tag | Points at | Use for |
+|---|---|---|
+| `…:sha-<short>` | one commit, immutably | **every real deploy.** Pin this, or the digest |
+| `…:edge` | the tip of `district` | tracking the default branch |
+| `…:dev` | the tip of `dev` | a pre-release branch on a real instance |
+
+⛔ **There is no `:latest` on this package and there will not be.** The fork
+publishes no release lines and no backports, so `:latest` (which the workflow emits
+only from a `vX.Y.Z` tag) is never written. `:edge` and `:dev` move under you, and
+then nothing records which commit an instance is running. Pin the digest.
+
+## Upstream's image: SQLite, single-tenant
+
+`ghcr.io/calnode/calnode`, built from the repo `Dockerfile`, which this fork keeps
+byte-identical to upstream's. A **single Go binary** that embeds the admin SPA and
+serves the public booking pages, with **SQLite** on a persistent volume. No separate
+database, cache, or web server.
 
 | Tag | Points at | Use for |
 |---|---|---|
 | `ghcr.io/calnode/calnode:latest` | the newest tagged **release** | most deploys |
 | `…:0.1.0` (exact) / `…:0.1` (tracks patches) | a pinned **release** | reproducible / version-pinned deploys (Watchtower, Dockge) |
-| `…:edge` | the tip of `main` | trying unreleased changes |
+| `…:edge` | the tip of upstream's `main` | trying unreleased changes |
 
 Or build it yourself with `docker build -t calnode .`.
 
+Everything in this guide applies to both images unless a section says otherwise:
+the binary is the same binary, and the image only decides which engine it is
+configured to reach. §1 has the variables, §10 has the multi-tenant ones, and
+[docs/MULTI_TENANT.md](docs/MULTI_TENANT.md) is the contract for that mode.
+
 This guide covers a generic Docker deploy and a step-by-step **Railway** deploy
-(the current reference host).
+(the reference host for the single-tenant shape).
 
 ---
 
@@ -27,15 +54,21 @@ This guide covers a generic Docker deploy and a step-by-step **Railway** deploy
 | `CALNODE_RECOVERY_SECRET` | recommended | — | Escrow secret so the data key can be recovered if the encryption key is rotated/lost. Store it somewhere separate. |
 | `CALNODE_SSO_SHARED_SECRET` | no | — | HMAC key for the signed session hand-off (`GET /v1/auth/sso`). Unset ⇒ that endpoint **404s**. Anything holding this secret can mint a session and create a user, so treat it like the encryption key: `openssl rand -hex 32`, env only, never in the admin UI. |
 | `METRICS_TOKEN` | no | — | Bearer token for `GET /metrics` (Prometheus text exposition). Unset ⇒ that endpoint **404s**, so an instance never publishes its request volume, booking rate or queue depth by accident. Scrape with `Authorization: Bearer $METRICS_TOKEN`; a wrong token gets the same 404 as an unconfigured one. |
+| `METRICS_ALLOW_UNAUTHENTICATED_FROM` | no | — | Comma-separated CIDRs whose requests may scrape `GET /metrics` with **no** bearer, for a collector that cannot hold a per-target secret. ⛔ Matched against the **TCP peer**, never a forwarded header, because here the address *is* the credential. So the endpoint must not be reachable through a proxy inside the allowed range. Empty ⇒ off, and the bearer is the only way in. |
+| `ADMIN_SPA` | no | `on` | `off` answers **404** on `GET /admin`, `GET /admin/` and everything under it, so a platform whose own console already has every admin surface does not ship a second one on each tenant host. ⛔ **Honoured only in multi-tenant mode**: a self-hoster has no other admin UI, so `off` on a single-tenant instance is ignored and said so at boot rather than locking the operator out. Values are `on` and `off` only; `true`/`false` are refused at boot, because the fallback is `on` and a value nobody can read exactly would serve the console the operator wrote the variable to remove. See §10 for what the bare root serves with it off. |
+| `PLATFORM_RETURN_ORIGINS` | no | — | Comma-separated origins that `GET /v1/calendar/connect?provider=…&return_to=…` may finish the OAuth round trip on, so a platform that replaced the admin SPA with its own pages can land the person back on its own console. Each entry is `scheme://host[:port]` with no path, query or fragment, `https` unless the host is `localhost`/`127.0.0.1`, and **a malformed one is fatal at boot** rather than a silently dead allowlist. Empty ⇒ a `return_to` is a **400**, not a no-op, so a platform pointed at an instance nobody configured for it finds out on the first attempt. The match is the whole origin byte for byte: a prefix match would accept `https://console.example.com.evil.test`, and an open redirect out of an OAuth callback is a better prize than most bugs in a scheduler. |
+| `CALNODE_PLATFORM_TOKEN` | no | — | Bearer for `/v1/platform/*`, compared in constant time. Unset, or on a single-tenant instance, every one of those routes **404s** rather than 401ing, so a prober cannot tell a control plane from an instance that has none. A wrong token is 401. |
 | `BASE_URL` | **yes (prod)** | `http://localhost:3000` | Identity host — admin UI, OAuth callbacks, invite links. **Must include the scheme** (`https://booking.example.com`). The `https://` prefix flips the app into production mode (secure cookies, encryption-key enforcement). |
 | `PUBLIC_BASE_URL` | no | = `BASE_URL` | Booker-facing host for booking links/emails, if different from the identity host. |
-| `DATABASE_URL` | no | `sqlite://./data/calnode.db` | Point at the persistent volume, e.g. `sqlite:///data/calnode.db`. A `postgres://user:pass@host:5432/dbname` URL selects PostgreSQL instead; anything else is SQLite. |
+| `DATABASE_URL` | no | `sqlite://./data/calnode.db` | Point at the persistent volume, e.g. `sqlite:///data/calnode.db`. A `postgres://user:pass@host:5432/dbname` URL selects PostgreSQL instead; anything else is SQLite. In multi-tenant mode this is the **application** role. |
+| `MULTI_TENANT` | no | off | Turns on multi-tenant mode: one process, many isolated workspaces, PostgreSQL row-level security as the boundary. ⚠️ Parsed as a Go boolean, so use `1` or `true`: a value `strconv.ParseBool` cannot read falls back to **off**, silently. Everything this mode adds is in §10. |
+| `DATABASE_ADMIN_URL` | **multi-tenant: yes** | — | The **platform** role's DSN: schema owner, `BYPASSRLS`, used for migrations, RLS setup, the worker's cross-tenant claim loop and the platform API. ⛔ Must be a different role from `DATABASE_URL`, and startup refuses them being the same: one role means the policies are inert against the application and nothing appears broken. |
 | `DB_MAX_OPEN_CONNS` | no | `10` | **PostgreSQL only.** Size of the connection pool. It has to fit inside the server's own `max_connections`, shared with every other client — raise it for a busy instance on a well-sized server, lower it behind PgBouncer or on a shared one. Must be a positive integer; anything else is ignored (with a warning) and the default stands. **Ignored on SQLite, which is always 1**: the single connection is what serialises write transactions, not a tuning choice. |
 | `DB_MAX_IDLE_CONNS` | no | `5` | **PostgreSQL only.** How many idle connections the pool keeps rather than closing. Positive integer, and capped at `DB_MAX_OPEN_CONNS` (a larger value is clamped, since `database/sql` would silently do the same). |
 | `PORT` | no | `3000` | The app listens on `$PORT`. Many platforms inject their own (Railway injects `8080`) — let them. |
 | `EMAIL_SMTP_HOST` / `_PORT` / `_USER` / `_PASS` | no¹ | — / `587` | SMTP. Can also be set later in Settings → Email (DB-stored, encrypted). |
 | `EMAIL_SMTP_TLS` / `_STARTTLS` | no | `false` | `STARTTLS` for 587, implicit `TLS` for 465. |
-| `EMAIL_FROM_ADDRESS` / `EMAIL_FROM_NAME` | no | `bookings@localhost` / `Calnode` | The From identity. |
+| `EMAIL_FROM_ADDRESS` / `EMAIL_FROM_NAME` | no | `bookings@localhost` / `District AI Scheduling` | The From identity. Set `EMAIL_FROM_NAME` to your own business name: it is what a booker reads in their inbox. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | no | — | Google sign-in + calendar. Can also be set in Settings → Google OAuth. |
 | `LITESTREAM_REPLICA_URL` | recommended | — | Enables continuous SQLite backup (see §6). |
 | `COOKIE_SECURE` | no | https→true | Override cookie Secure flag; defaults from `BASE_URL` scheme. |
@@ -49,6 +82,26 @@ This guide covers a generic Docker deploy and a step-by-step **Railway** deploy
 ---
 
 ## 2. Generic Docker
+
+This fork's image, multi-tenant (see §10 for the variables):
+
+```bash
+docker run -d -p 3000:3000 \
+  -e MULTI_TENANT=1 \
+  -e BASE_URL=https://scheduling.example.com \
+  -e DATABASE_URL=postgres://app:PASS@db:5432/scheduler \
+  -e DATABASE_ADMIN_URL=postgres://platform:PASS@db:5432/scheduler \
+  -e CALNODE_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
+  -e CALNODE_RECOVERY_SECRET="$(openssl rand -hex 32)" \
+  -e CALNODE_PLATFORM_TOKEN="$(openssl rand -hex 32)" \
+  -e CALNODE_SSO_SHARED_SECRET="$(openssl rand -hex 32)" \
+  ghcr.io/distronode-corporation/district-scheduler:sha-abc1234
+```
+
+There is no volume: this image writes nothing it cannot lose, and `DATA_DIR`
+(uploads: avatars, branding) should point at a mounted path if you accept uploads.
+
+Upstream's image, single-tenant on SQLite:
 
 ```bash
 docker run -d -p 3000:3000 \
@@ -64,7 +117,7 @@ docker run -d -p 3000:3000 \
 use `calnode` in place of the image name above.)
 
 Put a TLS-terminating reverse proxy in front (Caddy/nginx/Traefik). **The proxy
-must forward the original `Host` header** — Calnode's CSRF check compares
+must forward the original `Host` header** — the CSRF check compares
 `Origin`/`Referer` against `Host`, so a rewritten Host causes 403s on admin writes.
 
 ---
@@ -245,7 +298,7 @@ an answer on GCP. The two real options:
 4. **Verify the round-trip** before relying on it (below).
 
 > The backup contains booking PII (names, emails, intake answers) in plaintext —
-> keep the bucket **private**. Calnode's encrypted secrets (SMTP/OAuth) stay sealed
+> keep the bucket **private**. The encrypted secrets (SMTP/OAuth) stay sealed
 > by the envelope-encryption key even inside the backup.
 
 ### Verifying / restoring
@@ -282,14 +335,14 @@ unverified backup isn't a backup.
 
 ## 7. Built-in video & recording (LiveKit)
 
-Optional — only if you want Calnode-hosted in-browser meetings as a booking location.
+Optional — only if you want self-hosted in-browser meetings as a booking location.
 Full setup guide, including recording consent, the AI notetaker, and host controls:
 [docs/VIDEO.md](docs/VIDEO.md).
 
 - **Credentials live in the app, not env vars.** Create a project at
   [cloud.livekit.io](https://cloud.livekit.io) (or self-host LiveKit), then enter the
   **Server URL** (`wss://…`), **API Key**, and **API Secret** in **Settings → Video**.
-  "Calnode Video (LiveKit)" then becomes selectable as an event-type location.
+  The built-in video location then becomes selectable on an event type.
 - **Recording reuses your Litestream bucket.** If `LITESTREAM_*` (§6) is configured,
   meeting recordings are written to that same bucket under a `recordings/` prefix — no
   extra storage to set up. Turn recording on in **Settings → Video / Storage**; downloads
@@ -324,3 +377,73 @@ first event type + availability.
 | Email `550 domain not verified` | From address domain isn't verified with your email provider. |
 | Logo broken in email when testing locally | Gmail's image proxy can't reach `localhost` — only loads from a public URL. |
 | Litestream `InvalidAccessKeyId` / 403, log shows `endpoint=""` | `LITESTREAM_ENDPOINT` unset (or the running build predates the endpoint/region config) → Litestream defaults to AWS. Set the **account** endpoint (no bucket) + `region=auto` for R2, and redeploy so the config is live. |
+
+---
+
+## 10. Multi-tenant mode (this fork)
+
+`MULTI_TENANT` turns one process into a host for many isolated workspaces. Read
+**[docs/MULTI_TENANT.md](docs/MULTI_TENANT.md)** before deploying it: what follows is
+the deployment shape, and that document is the contract.
+
+### What it needs
+
+1. **PostgreSQL 16+ with two roles.** An owner (`BYPASSRLS`) that owns the schema,
+   and an application role (`NOBYPASSRLS`) that owns nothing and holds DML on the
+   schema's tables. ⛔ Not one role with two DSNs: startup refuses that, because one
+   role means the row-level security policies are inert against the connection they
+   exist to confine, and nothing looks broken when they are.
+2. `MULTI_TENANT`, both DSNs, `CALNODE_PLATFORM_TOKEN`, `BASE_URL`, and
+   `CALNODE_SSO_SHARED_SECRET` when Google or Microsoft login is configured (the
+   callbacks hand off through it). `TRUSTED_PROXY_CIDRS` if you are behind a proxy.
+3. DNS for each workspace's `public_host` pointed at the instance, with TLS
+   terminated for it. An unrecognised host is a **404**, never a fallback to a
+   default tenant.
+
+Boot order is migrate on the platform handle → enable row-level security → suspend
+the seeded `default` workspace → verify both roles. The first, second and fourth are
+fatal; the third is logged.
+
+### Provisioning
+
+Workspaces are created through `POST /v1/platform/workspaces`, not through the
+console. One transaction writes the workspace, its settings row, the owner, the
+first API key, a webhook subscribed to every event the codebase emits, and a default
+event type with availability. The response carries `api_key` and `webhook_secret`
+and shows them **once**. `docs/MULTI_TENANT.md` has the request body, the rest of
+the platform routes (get, patch, delete, export, import, attendee erasure, the
+member and API-key routes) and the rules each of them enforces.
+
+### `ADMIN_SPA=off` and the bare root
+
+With the embedded console off, `GET /{$}` does **not** 404. It serves a neutral
+index: that workspace's public, active event types, each linking to `/book/<slug>`,
+on the booking pages' own stylesheet and branding, translated through the same
+plumbing, `noindex`, under the strict public CSP. A workspace with nothing public
+gets the same page and one sentence.
+
+That is a deliberate choice rather than a convenience. Trimming a booking link back
+to the domain is a thing people do, and on a tenant's own public host a bare 404
+says "no such path" when what is true is "the console that used to be here is gone".
+The index lists nothing the booking pages do not already publish to the same
+audience: no host names, no descriptions, no counts. The unknown-host 404 still
+fires, earlier, and carries that other answer.
+
+⛔ **With the console off, an SSO hand-off needs an explicit `next` outside
+`/admin`.** The default destination is `/admin/`, which now 404s, so a hand-off
+without one answers 404 **before** minting the session rather than seating a session
+and landing the person on a dead end. An explicit `next` **under** `/admin` is
+refused for the same reason: native clients send `next=/admin/` on every hand-off,
+so deferring to the caller would have made the guard fire for nobody.
+
+### Scraping `/metrics` from a cluster
+
+`GET /metrics` is bearer-gated on `METRICS_TOKEN` and 404s without it, which is
+right for a publicly reachable endpoint and wrong for the one caller that has to
+read it: a Prometheus collector using annotation autodiscovery sends **one** bearer
+token file to every target it scrapes, so pointing it at this token would present
+this instance's secret to every other scraped pod on the cluster. Set
+`METRICS_ALLOW_UNAUTHENTICATED_FROM` to the networks the collector dials from (on
+Kubernetes, the cluster's pod CIDR) and those requests are served with no bearer.
+⛔ It matches the TCP peer, so the endpoint must not be reachable through a proxy
+inside the allowed range, or every request arrives wearing that proxy's address.
