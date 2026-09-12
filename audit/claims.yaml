@@ -1,56 +1,167 @@
-# Calnode — Claims → Verification Manifest
+# District Scheduler — Claims → Verification Manifest
 #
-# Every public claim we make about Calnode's architecture, security, and privacy,
-# mapped to exactly how to verify it against the actual source. This is not a
+# Every public claim we make about District Scheduler's architecture, security, and
+# privacy, mapped to exactly how to verify it against the actual source. This is not a
 # certification and not a substitute for your own review — it's a falsifiable index
 # so you (or your own LLM/agent) can check each claim in minutes instead of hours.
 #
+# District Scheduler is Distronode Corporation's fork of Calnode. Most of what is
+# below is upstream's code and upstream's claim, unchanged here. Where the fork
+# diverges the entry says so, and the two entries that are wholly the fork's are
+# `postgres-image-and-mode` and `row-level-security-tenant-isolation`.
+#
 # How to use this file:
-#   1. Clone the repo at the commit/tag this file ships with.
+#   1. Clone the repo at the commit this file ships with (`last_verified_commit`).
 #   2. For each claim, run the `verify` commands and/or read the cited files.
 #   3. If a claim doesn't hold, it's a bug in our claims (or our code) — please open
-#      an issue: https://github.com/Calnode/calnode/issues
+#      an issue:
+#      https://github.com/distronode-corporation/district-scheduler/issues
 #
 # See AUDIT.md for the full audit workflow (deterministic scanners + LLM prompt-pack).
 
 version: 1
-last_verified: "2026-07-02"
-last_verified_commit: "6db0643"
+last_verified: "2026-09-12"
+last_verified_commit: "10a561e"
 
 claims:
-  - id: single-binary-no-server-db
+  - id: single-binary-sqlite-build
     claim: >
-      Calnode ships as a single static Go binary with an embedded SQLite database.
-      No Postgres, MySQL, or Redis server is required — self-hosting is `docker run`
-      or one binary on a VPS.
+      With `MULTI_TENANT` unset, this ships as a single static Go binary with an
+      embedded SQLite database. No Postgres, MySQL, or Redis SERVER is required —
+      self-hosting is `docker run` or one binary on a VPS. This is upstream
+      Calnode's build, and the fork does not modify the recipe that produces it.
     verify:
-      - "grep -iE 'postgres|mysql|redis' go.mod — expect no matches. The only DB
-         driver is modernc.org/sqlite (pure Go, no CGO — the whole reason
-         CGO_ENABLED=0 cross-compiles cleanly)."
-      - "internal/db/ opens exactly one *sql.DB; see internal/db/db.go."
-    status: verified
-    caveat: null
-
-  - id: instance-per-tenant-isolation
-    claim: >
-      One Calnode deployment is one isolated workspace. There is no shared
-      multi-tenant database and no cross-tenant data path, because there is no
-      tenant model in the code at all — the isolation boundary is the deployment
-      itself (a separate binary + SQLite file per customer/workspace).
-    verify:
-      - "grep -rl 'tenant_id\\|workspace_id' internal/db/migrations/*.sql — expect
-         no matches. There's no column to isolate because there's no multi-tenant
-         schema in the first place."
-      - "Run the tenant-isolation prompt in audit/prompts/prompt-pack.md against
-         your own LLM to have it try to find a cross-tenant path and confirm it
-         can't."
+      - "The single-binary image is built from upstream's Dockerfile, byte for
+         byte. Prove it rather than believe it:
+           git remote add upstream https://github.com/Calnode/calnode
+           git fetch upstream
+           git diff upstream/main -- Dockerfile entrypoint.sh litestream.yml
+         Expect no output. The fork's own image is a separate file
+         (Dockerfile.district) and is the next entry."
+      - "grep -iE 'mysql|redis' go.mod — expect no matches. ⚠️ A grep for
+         'postgres' DOES match, and that is the claim being precise rather than the
+         claim being broken: the two database drivers compiled in are
+         modernc.org/sqlite (pure Go, no CGO — the whole reason CGO_ENABLED=0
+         cross-compiles cleanly) and github.com/jackc/pgx/v5. What this entry says
+         is that no server is REQUIRED for this build, not that no driver exists.
+         An earlier version of this file asserted the grep found nothing, which had
+         been false since PostgreSQL support landed."
+      - "internal/db/db.go's OpenDB picks the engine from the DATABASE_URL scheme:
+         a postgres:// URL selects PostgreSQL, everything else (sqlite://./rel,
+         sqlite:///abs, :memory:, a bare path) selects SQLite. The default, in
+         internal/config/config.go, is sqlite://./data/calnode.db."
+      - "internal/config/config.go's Validate returns nil for a single-tenant
+         instance before it reaches any of the PostgreSQL requirements, so nothing
+         about this build can demand a server."
     status: verified
     caveat: >
-      This is an architectural claim, not a runtime access-control claim — it's
-      true by the absence of a shared-tenancy code path, not by a permission check
-      you could theoretically misconfigure. If you run multiple Calnode instances
-      behind one reverse proxy, isolation is exactly as strong as your proxy/network
-      config, which is outside Calnode's code.
+      This repository produces TWO images and this entry covers only the first.
+      MULTI_TENANT mode refuses to boot without a postgres:// DSN, because tenant
+      isolation there is PostgreSQL row-level security and SQLite has no equivalent
+      to express it with. So "no server database required" is a true statement about
+      the single-tenant build and a false one about the mode this fork exists for.
+      The two entries are meant to be read together, never separately.
+
+  - id: postgres-image-and-mode
+    claim: >
+      The image this fork deploys is PostgreSQL-only and is a different file from
+      the one above. Dockerfile.district builds a distroless, non-root image with no
+      SQLite file, no Litestream and no shell entrypoint, and `MULTI_TENANT`
+      requires PostgreSQL plus two distinct database roles or it refuses to start.
+    verify:
+      - "Dockerfile.district, the runtime stage (from the `FROM
+         gcr.io/distroless/static-debian12:nonroot` line onward): USER 10001:10001,
+         ENTRYPOINT is the binary itself. There is no shell in the image, so there
+         is nothing supervising the process and no entrypoint script to read."
+      - "Contrast it with upstream's: grep -n -i 'litestream' Dockerfile
+         entrypoint.sh litestream.yml matches all three, and Dockerfile.district
+         references none of them. (It mentions Litestream only in its header
+         comment, saying why it has none — so grep the two files side by side
+         rather than grepping for the word.)"
+      - "internal/config/config.go's Validate, MULTI_TENANT branch: a non-postgres
+         DATABASE_URL, a missing DATABASE_ADMIN_URL, and the two DSNs naming one
+         role are each a startup error with its own message. Run the image with
+         MULTI_TENANT=1 and a sqlite:// DSN and read what it exits with."
+      - ".github/workflows/docker-publish.yml — `file: Dockerfile.district`. The
+         upstream Dockerfile is not built by this repository's CI at all."
+    status: verified
+    caveat: >
+      The binary is the same binary: one build with both engines compiled in, and
+      the image only decides which one it is configured to reach. Somebody tracing
+      the SQLite code paths in this repository is not looking at dead code, and a
+      PostgreSQL-only image is a deployment property, not a compile-time one.
+
+  - id: row-level-security-tenant-isolation
+    claim: >
+      In `MULTI_TENANT` mode one process serves many isolated workspaces, and the
+      isolation boundary is PostgreSQL row-level security — not a predicate the
+      query author has to remember. Every tenant table carries a workspace_id, has
+      ENABLE ROW LEVEL SECURITY, and has exactly one policy comparing that column to
+      current_setting('app.workspace_id'). The application role is NOBYPASSRLS and
+      owns no table in the schema. An unbound statement therefore matches no row:
+      silently empty rather than silently global. With the variable unset, none of
+      this is reachable and single-tenant behaviour is unchanged.
+    verify:
+      - "internal/db/rls_proof_test.go —
+         TestPostgres_rlsIsolatesAnUnprivilegedRole is the executable proof.
+         Unbound, the application role reads 0 of 2 seeded rows and its INSERT is
+         refused with SQLSTATE 42501, leaving nothing behind in the default
+         workspace; bound, it reads and writes exactly its own. It carries a
+         positive control on the DATA (the owner role sees both rows first), so a
+         zero cannot be an empty table."
+      - "internal/db/tenancy_test.go — the schema half:
+         TestPostgres_exactlyOnePolicyPerTenantTable,
+         TestPostgres_exemptTablesHaveNoTenantColumn,
+         TestPostgres_rlsIsOffUntilEnabled,
+         TestPostgres_appRoleCannotWriteTheTenantRoot,
+         TestPostgres_compositeUniqueness, and TestSQLite_enableRLSIsANoOp."
+      - "internal/server/tenancy_proof_test.go — the request half, end to end:
+         TestProof_noRouteLeaksAnotherWorkspace, TestProof_everyMCPToolIsScoped,
+         TestProof_everyWorkerJobTypeIsCoveredAndScoped, and
+         TestProof_unscopedQueryReturnsNothing, which is the negative control."
+      - "internal/handler/caldav_connect_tenancy_test.go,
+         calendar_reconcile_tenancy_test.go, calendar_tenancy_test.go,
+         sso_tenancy_test.go and tracking_tenancy_test.go — the per-handler tests
+         for the paths that resolve a workspace from something other than the
+         request Host."
+      - "internal/db's VerifyRoles, called at boot: it refuses an application role
+         that is a superuser, holds BYPASSRLS, or owns any table, and refuses a
+         platform role that does NOT bypass. A single role for both DSNs is the
+         misconfiguration hardest to notice from the outside — every request works,
+         and it can also read every other workspace — so startup refuses it
+         outright."
+      - "⛔ All of the above need a real PostgreSQL. Export
+         CALNODE_TEST_POSTGRES_DSN=postgres://... and run
+         `go test ./internal/db/ ./internal/server/ ./internal/handler/`. WITHOUT
+         it every PostgreSQL case SKIPS and a green run proves nothing about this
+         claim — read the skip count before you believe the result."
+      - "Run the tenant-isolation prompt in audit/prompts/prompt-pack.md against
+         your own LLM to have it try to find a cross-tenant path."
+    status: verified
+    caveat: >
+      Three things this claim does not say.
+      (1) FORCE ROW LEVEL SECURITY is deliberately NOT used. It would apply the
+      policy to the table owner too, and in single-tenant mode the ordinary DSN
+      *is* the owner, so every existing deployment whose DSN is not a superuser
+      would go blind. ENABLE alone already isolates a non-owner role, which is what
+      the application role is.
+      (2) There is a handle that bypasses the policies on purpose — the platform
+      handle, which runs migrations, the worker's cross-tenant claim loop and the
+      platform API. Five tables are exempt from tenancy because they are not per
+      tenant (workspaces, crypto_keystore, goose_db_version, oauth_clients,
+      sso_nonces), and everything reading those names its own workspace_id in every
+      statement because there is no policy behind it. docs/MULTI_TENANT.md states
+      both rules and the bugs each has already caused here.
+      (3) The data encryption key is per PROCESS, not per workspace:
+      crypto_keystore holds one wrapped DEK, so an operator who can read the
+      database can decrypt every workspace, and a workspace cannot move between
+      instances without its key. Export carries a fingerprint of the wrapped key and
+      import refuses a mismatch, which makes that coupling loud rather than silent.
+      Per-tenant DEKs are a known, unbuilt follow-up.
+      This is a runtime enforcement claim, unlike the instance-per-tenant claim it
+      replaces, which was true by the absence of a tenant model. That model now
+      exists, so the honest statement is about what the database enforces and what
+      startup refuses.
 
   - id: meeting-content-egress
     claim: >
@@ -129,7 +240,9 @@ claims:
       key — not flat single-key AES-GCM.
     verify:
       - "internal/keyvault/keyvault.go — the KEK/DEK implementation."
-      - "internal/db/migrations/00017_crypto_keystore.sql — the keystore schema."
+      - "internal/db/migrations/{sqlite,postgres}/00017_crypto_keystore.sql — the
+         keystore schema. ⚠️ The migrations are one schema in two spellings, one
+         directory per engine, and every path in this file names both."
       - "CALNODE_ENCRYPTION_KEY / CALNODE_RECOVERY_SECRET env vars — rotation and
          escrow support."
     status: verified
@@ -141,7 +254,8 @@ claims:
       (audio announcement + on-screen prompt) and a Continue/Leave choice when a
       meeting is being recorded, and each decision is logged.
     verify:
-      - "internal/db/migrations/00044_meeting_consents.sql — the consent audit log."
+      - "internal/db/migrations/{sqlite,postgres}/00044_meeting_consents.sql — the
+         consent audit log."
       - "assets/livekit-room.js — the notice + Continue/Leave UI, triggered on the
          recording metadata flag."
     status: verified
@@ -181,7 +295,8 @@ claims:
       availability/constraints and returns natural-language decisions that the
       deterministic backend executes.
     verify:
-      - "internal/db/migrations/00034_llm_settings.sql, 00035_llm_instructions.sql —
+      - "internal/db/migrations/{sqlite,postgres}/00034_llm_settings.sql and
+         00035_llm_instructions.sql —
          the BYO-LLM config (operator-supplied endpoint + key)."
       - "internal/handler/booking_assistant.go — the tool-loop drives
          computeSlots/createBookingForSlug (the same deterministic cores the REST
@@ -191,13 +306,16 @@ claims:
 
   - id: small-enough-to-audit
     claim: >
-      Calnode's entire backend is small enough to fit in a single LLM context
+      The entire backend is small enough to fit in a single LLM context
       window, which is the whole premise of this audit kit — a cal.com-scale
       codebase can't do this.
     verify:
-      - "Non-test Go source: ~24,000 lines / ~840KB across ~105 files (find . -name
-         '*.go' -not -name '*_test.go' -not -path './frontend/*' | xargs wc -l)."
-      - "Full repository (backend + SvelteKit admin frontend + tests): ~2.6MB
+      - "Non-test Go source: ~37,300 lines / ~1.4MB across 146 files (find . -name
+         '*.go' -not -name '*_test.go' -not -path './frontend/*' | xargs wc -l).
+         Measured at last_verified_commit; it was ~24,000 lines across ~105 files
+         before PostgreSQL support and MULTI_TENANT, so re-run the command rather
+         than trusting this line."
+      - "Full repository (backend + SvelteKit admin frontend + tests): ~4.9MB
          tracked (git ls-files -z | xargs -0 du -cb)."
     status: verified
     caveat: >
@@ -208,13 +326,19 @@ claims:
 
   - id: lean-dependency-tree
     claim: >
-      The Go backend has a lean dependency tree — 27 direct/indirect Go modules per
-      the current SBOM, not the sprawling transitive tree typical of larger
+      The Go backend has a lean dependency tree — 11 direct and 22 indirect Go
+      modules, 33 in total, not the sprawling transitive tree typical of larger
       frameworks.
     verify:
+      - "Read go.mod: two require blocks, 11 entries and 22 `// indirect` entries.
+         That is the number this claim states, and it is the one that is
+         reproducible."
       - "syft dir:. --exclude './frontend/**' --exclude './.git/**' -o table | grep
          golang | wc -l"
-      - "go list -m all | wc -l"
+      - "⚠️ `go list -m all | wc -l` returns considerably more (111 at
+         last_verified_commit) because it includes every dependency's own TEST
+         dependencies, which are not compiled into the binary. Both numbers are
+         real; they answer different questions."
     status: verified
     caveat: >
       This claim is scoped to the Go backend. The SvelteKit admin frontend pulls in

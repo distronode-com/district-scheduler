@@ -1,10 +1,15 @@
-# Auditing Calnode — a 10-minute self-serve security & quality check
+# Auditing District Scheduler — a 10-minute self-serve security & quality check
 
-Calnode's backend is ~24,000 lines of Go across ~105 files (~840KB, excluding
+This backend is ~37,000 lines of Go across 146 files (~1.4MB, excluding
 tests). That's small enough to fit entirely in one LLM context window — which most
 scheduling software (cal.com included) can't do. This page is our attempt to turn
 "auditable" from a slogan into something you actually run, yourself, before you
-trust Calnode with your calendar or your customers' meeting data.
+trust it with your calendar or your customers' meeting data.
+
+District Scheduler is Distronode Corporation's Apache-2.0 fork of
+[Calnode](https://github.com/Calnode/calnode). Most of what you will read is
+upstream's code; the fork adds `MULTI_TENANT` mode and a PostgreSQL-only image, and
+both get their own entries in the claims manifest.
 
 **This is a due-diligence accelerator, not a certification.** It doesn't replace a
 real penetration test or a formal security review if your org requires one — it's
@@ -13,19 +18,29 @@ of the weeks a typical vendor security review takes, and to short-circuit the pa
 of procurement that usually blocks everything else.
 
 **Everything here runs on your machine, with your own tools and your own API key.**
-Nothing routes through Calnode or any Calnode-hosted service. We don't see your
+Nothing routes through us or any service we host. We don't see your
 results, and you don't have to trust us to interpret them.
 
 ---
 
 ## 1. Architecture & trust boundaries, in one page
 
-- **Single Go binary + embedded SQLite.** No Postgres, MySQL, or Redis. The binary
-  `go:embed`s a compiled SvelteKit admin app; public booking pages are
-  server-rendered Go templates.
-- **Instance-per-tenant.** One deployment (one binary + one SQLite file) is one
-  workspace. There's no shared multi-tenant database in the codebase to isolate —
-  the deployment boundary *is* the tenant boundary.
+- **One Go binary, two engines.** The binary `go:embed`s a compiled SvelteKit admin
+  app; public booking pages are server-rendered Go templates. Persistence is
+  PostgreSQL or SQLite, chosen by the `DATABASE_URL` scheme. There is no Redis, no
+  separate API server and no message broker on either path: background work is an
+  in-process queue on the same database.
+- **Two deployment shapes, and the isolation story differs.** With `MULTI_TENANT`
+  unset, one deployment is one workspace, there is no tenant predicate anywhere on
+  the request path, and SQLite plus Litestream is the whole storage story. With it
+  set, one process serves many workspaces on PostgreSQL and **row-level security in
+  the database is the isolation boundary**: every tenant table has a policy
+  comparing `workspace_id` to `current_setting('app.workspace_id')`, the
+  application role is `NOBYPASSRLS` and owns no table, and a statement that forgets
+  its predicate returns nothing rather than everything. Startup refuses the mode on
+  SQLite, refuses it without a second admin DSN, and refuses two DSNs naming one
+  role. `docs/MULTI_TENANT.md` is the contract; the proof tests are named in the
+  manifest.
 - **Data flow, normal path:** booker hits a public `/book/{slug}` page (Go
   template, no auth) → the deterministic slot engine checks calendar free/busy
   (Google/Microsoft/CalDAV, native APIs, never stale `.ics`) → a booking is created
@@ -46,10 +61,11 @@ results, and you don't have to trust us to interpret them.
 ## 2. Layer 1 — deterministic scanners (no LLM, run this first)
 
 Copy-paste this block against a fresh clone. All tools are standard, neutral,
-widely-used security tooling — none of it is Calnode-specific.
+widely-used security tooling — none of it is specific to this project.
 
 ```bash
-git clone https://github.com/Calnode/calnode && cd calnode
+git clone https://github.com/distronode-corporation/district-scheduler \
+  && cd district-scheduler
 
 # Install the scanners (Go tools install cleanly with no CGO toolchain needed)
 go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -81,23 +97,26 @@ semgrep scan --config p/security-audit --config p/secrets \
   --exclude frontend/node_modules --exclude frontend/build .
 ```
 
-Our own latest run of this exact block: **govulncheck 0 · gosec 0 unresolved (all
-findings annotated) · gitleaks 0 across 337 commits · semgrep 0**. Yours should
-match — if it doesn't, that's either drift since our last run or something we need
-to know about. (`govulncheck` and `gosec` are also re-run on every push to `main`
-via `.github/workflows/audit.yml`, so an unannotated gosec finding or a new CVE
-fails CI instead of silently accumulating — see `audit/claims.yaml`'s
-`clean-security-scan` entry for the last time this actually caught something.)
+Our own run of this exact block, **as of the commit this file ships with**:
+**govulncheck 0 · gosec 0 unresolved (all findings annotated) · gitleaks 0 across
+the full history · semgrep 0**. Yours should match — if it doesn't, that's either
+drift since that commit or something we need to know about. No count is quoted here
+on purpose: a number in prose rots, and the run you do yourself is the only one that
+answers for the tree in front of you. (`govulncheck` and `gosec` are also re-run by
+`.github/workflows/audit.yml`, so an unannotated gosec finding or a new CVE fails CI
+instead of silently accumulating — see `audit/claims.yaml`'s `clean-security-scan`
+entry for the last time this actually caught something.)
 
-We also publish an [OpenSSF Scorecard](https://github.com/Calnode/calnode) badge
-and CI-generated SBOM — see the badge on [README.md](README.md) and the
+We also publish an
+[OpenSSF Scorecard](https://securityscorecards.dev/viewer/?uri=github.com/distronode-corporation/district-scheduler)
+badge and CI-generated SBOM — see the badge on [README.md](README.md) and the
 `audit` workflow under **Actions** in this repo for the latest run.
 
 ## 3. Layer 2 — the adversarial LLM pass (the part a big codebase can't offer)
 
 Deterministic scanners can't answer the questions a CISO actually asks: *where
 does data really go, can tenant isolation be broken, is the auth model sound.*
-Because Calnode's backend fits entirely in an LLM's context window, you can point
+Because this backend fits entirely in an LLM's context window, you can point
 your **own** coding agent — Claude Code, Cursor, whatever you already use, with
 **your own API key** — at the whole codebase and ask it directly.
 
@@ -117,25 +136,31 @@ choice can look identical from the code alone.
 
 ## 4. The claims manifest — falsifiable, including the unflattering parts
 
-**[→ audit/claims.yaml](audit/claims.yaml)** maps every public claim we make (single
-binary/no server DB, instance-per-tenant isolation, meeting-content egress scoped to
-Deepgram only, envelope encryption at rest, consent-aware recording, consent-gated
-analytics, BYO-LLM with no raw calendar access, the "small enough to audit" claim
-itself) to exactly how to verify it — including the caveats and exceptions we'd
+**[→ audit/claims.yaml](audit/claims.yaml)** maps every public claim we make (the
+single-binary SQLite build, the fork's PostgreSQL-only image, row-level-security
+tenant isolation, meeting-content egress scoped to Deepgram only, envelope
+encryption at rest, consent-aware recording, consent-gated analytics, BYO-LLM with
+no raw calendar access, the "small enough to audit" claim itself) to exactly how to
+verify it — including the caveats and exceptions we'd
 rather not have to admit, like recording consent being notice-and-choice rather than
 a hard gate. Feed it to your agent alongside the prompt-pack and have it report
 ✅/⚠️ per claim against what it actually finds in the code.
 
 ## 5. Keeping this honest over time
 
-The deterministic half of `claims.yaml` (no Postgres driver, no new third-party
-egress, no secrets in history, no unresolved vulnerabilities, no unannotated SAST
-findings) is wired into `.github/workflows/audit.yml` as CI assertions — so if a
-future change silently breaks one of these claims (a new dependency drags in a
-Postgres driver, a new integration starts sending recordings somewhere new, a new
-gosec finding ships without a `#nosec` justification), the build fails instead of
-the claim quietly going false. This manifest is a regression guard, not just a
-one-time document.
+The deterministic half of `claims.yaml` (no new third-party egress, no secrets in
+history, no unresolved vulnerabilities, no unannotated SAST findings) is wired into
+`.github/workflows/audit.yml` as CI assertions — so if a future change silently
+breaks one of these claims (a new integration starts sending recordings somewhere
+new, a new gosec finding ships without a `#nosec` justification), the build fails
+instead of the claim quietly going false. This manifest is a regression guard, not
+just a one-time document.
+
+The tenancy claim is guarded differently, and deliberately: it is not a grep, it is
+the proof tests named in its own `verify` block, which need a real PostgreSQL to
+say anything. ⛔ Run them with `CALNODE_TEST_POSTGRES_DSN` set and read the skip
+count, because without it every PostgreSQL case skips and the run is green while
+proving nothing.
 
 This gate has already caught a real gap once: `gosec` was documented in this page's
 scanner block (§2) as something you should expect to come back clean, but it had
@@ -149,4 +174,10 @@ it drift, that's a known gap, not a surprise.
 ---
 
 **Found something?** This whole exercise only works if you tell us when it's wrong.
-Open an issue: https://github.com/Calnode/calnode/issues
+Open an issue:
+https://github.com/distronode-corporation/district-scheduler/issues
+
+A bug in the scheduling engine itself is often worth reporting to
+[upstream Calnode](https://github.com/Calnode/calnode/issues) as well. Anything
+about `MULTI_TENANT`, the PostgreSQL paths or `Dockerfile.district` belongs here:
+upstream does not ship them.
